@@ -1,10 +1,10 @@
 [Unit]
 Description=Kubernetes Admission Controller
-After=network.target opa.service setup-storage-bind-mounts.service
+# Requires=setup-storage-bind-mounts.service added via cleanup role drop-in; omitted here because
+# setup-storage-bind-mounts does not exist during build VM (storage volume not attached).
+After=network.target opa.service
 Wants=opa.service
 Before=k3s.service
-# Certificates may be bind-mounted from storage volume; ensure they are in place before starting
-RequiresMountsFor=/etc/admission-controller/certs
 
 [Service]
 Type=simple

@@ -114,7 +114,9 @@ def build_base_cmd(
 
     img_fmt = _block_format(img_path)
     drive_opts = f'file={img_path},if=none,id=virtio-disk0,cache=none,aio=native,format={img_fmt}'
-    if img_fmt == "raw":
+    if img_fmt == "qcow2":
+        drive_opts += ",discard=unmap"
+    elif img_fmt == "raw":
         drive_opts += ",discard=on,detect-zeroes=on"
     cmd.extend(["-drive", drive_opts])
     dev_opts = "virtio-blk-pci,drive=virtio-disk0"
@@ -131,7 +133,7 @@ def build_network(
     network_type: str,
     net_iface: str | None,
     ssh_port: int,
-    net_queues: int = 16,
+    net_queues: int = 4,
 ):
     """Add networking configuration to QEMU command."""
     if network_type == "tap":

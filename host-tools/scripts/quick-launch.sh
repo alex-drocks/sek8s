@@ -5,12 +5,19 @@
 set -e
 
 # --------------------------------------------------------------------
+# VM base image version - must match tdx-guest.qcow2 from https://vm.chutes.ai
+# Update this when publishing a new VM; ensures QEMU args match VM version (RTMR0 consistency)
+# --------------------------------------------------------------------
+EXPECTED_BASE_SHA256="ecc1d58a4f870ff11bad5f6e309d436bd6d0a66d7a69f68cfd443ed101d81cae"
+
+# --------------------------------------------------------------------
 # Hard-coded defaults (lowest precedence)
 # --------------------------------------------------------------------
 CONFIG_FILE=""
 
 HOSTNAME=""
-VM_IMAGE=""
+BASE_IMAGE=""
+OVERLAY_DIR=""
 MINER_SS58=""
 MINER_SEED=""
 
@@ -25,14 +32,17 @@ STORAGE_VOLUME=""
 CONFIG_VOLUME=""
 SKIP_BIND="false"
 FOREGROUND="false"
+SKIP_CHECKSUM="false"
 SSH_PORT=2222
 NETWORK_TYPE="tap"
+EPHEMERAL="false"
 
 # --------------------------------------------------------------------
 # Temporary CLI containers
 # --------------------------------------------------------------------
 CLI_HOSTNAME=""
-CLI_VM_IMAGE=""
+CLI_BASE_IMAGE=""
+CLI_OVERLAY_DIR=""
 CLI_MINER_SS58=""
 CLI_MINER_SEED=""
 CLI_VM_IP=""
@@ -46,8 +56,11 @@ CLI_STORAGE_VOLUME=""
 CLI_CONFIG_VOLUME=""
 CLI_SKIP_BIND=""
 CLI_FOREGROUND=""
+CLI_SKIP_CHECKSUM=""
 CLI_SSH_PORT=""
 CLI_NETWORK_TYPE=""
+CLI_EPHEMERAL=""
+CLI_DOWNLOAD=""
 
 # --------------------------------------------------------------------
 # Parse CLI options
@@ -60,7 +73,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     --config) CONFIG_FILE="$2"; shift 2 ;;
     --hostname) CLI_HOSTNAME="$2"; shift 2 ;;
-    --image) CLI_VM_IMAGE="$2"; shift 2 ;;
+    --base-image) CLI_BASE_IMAGE="$2"; shift 2 ;;
+    --overlay-dir) CLI_OVERLAY_DIR="$2"; shift 2 ;;
     --miner-ss58) CLI_MINER_SS58="$2"; shift 2 ;;
     --miner-seed) CLI_MINER_SEED="$2"; shift 2 ;;
     --vm-ip) CLI_VM_IP="$2"; shift 2 ;;
@@ -74,39 +88,46 @@ while [[ $# -gt 0 ]]; do
     --config-volume) CLI_CONFIG_VOLUME="$2"; shift 2 ;;
     --skip-bind) CLI_SKIP_BIND="true"; shift ;;
     --foreground) CLI_FOREGROUND="true"; shift ;;
+    --skip-checksum) CLI_SKIP_CHECKSUM="true"; shift ;;
     --ssh-port) CLI_SSH_PORT="$2"; shift 2 ;;
     --network-type) CLI_NETWORK_TYPE="$2"; shift 2 ;;
+    --ephemeral) CLI_EPHEMERAL="true"; shift ;;
+    --download)
+      echo "=== Downloading VM Base Image ==="
+      BASE_DOWNLOAD_PATH="/var/lib/chutes/base-images/tdx-guest.qcow2"
+      sudo mkdir -p "$(dirname "$BASE_DOWNLOAD_PATH")"
+      if command -v aria2c >/dev/null 2>&1; then
+        echo "Downloading to $BASE_DOWNLOAD_PATH..."
+        aria2c -x 16 -s 16 -k 1M -o "$BASE_DOWNLOAD_PATH" "https://vm.chutes.ai/tdx-guest.qcow2" || {
+          echo "Download failed. Ensure aria2c is installed and the URL is accessible."
+          exit 1
+        }
+        echo "✓ Download complete: $BASE_DOWNLOAD_PATH"
+      else
+        echo "Error: aria2c not found. Install with: sudo apt install aria2"
+        exit 1
+      fi
+      exit 0
+      ;;
 
     --clean)
       echo "=== Cleaning Up TEE VM Environment ==="
-      # Ensure the Chutes VM is stopped before attempting to unbind passthrough devices.
-      # Some runtimes may take a short moment to release devices, so stop the VM
-      # first and then wait for VM-related processes to exit.
       if [[ -x "./run-td" ]]; then
         echo "Stopping Chutes VM (if running)..."
         ./run-td --clean 2>/dev/null || true
       fi
 
-      # Give the VM a short window to exit and release devices.
-      echo "Waiting for VM processes to exit before unbinding devices..."
+      echo "Waiting for VM processes to exit..."
       for i in {1..15}; do
-        # Look for common VM process names. Adjust pattern if your VM runtime differs.
         if ! pgrep -f 'qemu-system|qemu-kvm|run-td' >/dev/null 2>&1; then
-          echo "No VM processes found. Proceeding with bridge cleanup and device unbind."
+          echo "No VM processes found. Proceeding with bridge cleanup."
           break
         fi
         echo "VM processes still running; waiting... ($i/15)"
         sleep 1
       done
 
-      # Clean up networking/bridge
       ./setup-bridge.sh --clean 2>/dev/null || true
-
-      # Only unbind devices once the VM has stopped (or timeout reached).
-      if [ -f "./unbind.sh" ]; then
-        echo "Unbinding passthrough devices..."
-        sudo ./unbind.sh 2>/dev/null || true
-      fi
       exit 0
       ;;
 
@@ -129,7 +150,8 @@ Config File:
 
 Command Line Options (CLI overrides YAML when provided):
   --hostname NAME           VM hostname (required if not in YAML)
-  --image PATH              Path to VM image (required from CLI or config file)
+  --base-image PATH         Path to base VM image (qcow2). Default: /var/lib/chutes/base-images/tdx-guest.qcow2
+  --overlay-dir PATH        Directory for overlay files. Default: /var/lib/chutes/vm-overlays/
   --miner-ss58 VALUE        Miner SS58 credential (required)
   --miner-seed VALUE        Miner seed credential (required)
 
@@ -146,15 +168,18 @@ Volumes:
   --storage-volume PATH      Default: storage-<hostname>.raw (existing .qcow2 allowed at launch)
   --config-volume PATH
   --skip-bind
+  --skip-checksum         Skip base image SHA256 verification (for debug with custom images)
 
 Runtime:
   --foreground
   --network-type [tap|user]
+  --ephemeral               Use ephemeral overlay (cleared on reboot)
 
 Resource sizing is fixed inside run-td to preserve RTMR determinism.
 
 Management:
-  --clean                   Clean up everything
+  --clean                   Clean up VM and bridge
+  --download                Download VM base image to /var/lib/chutes/base-images/
 
 Examples:
   # Create template config
@@ -165,6 +190,9 @@ Examples:
 
   # Use config with overrides
   $0 config.yaml --foreground --skip-bind
+
+  # Download VM base image (before first run)
+  $0 --download
 
   # Command line only
   $0 --hostname miner --miner-ss58 'ss58' --miner-seed 'seed'
@@ -220,7 +248,8 @@ fi
 # Apply CLI overrides (highest precedence)
 # --------------------------------------------------------------------
 [[ -n "$CLI_HOSTNAME" ]] && HOSTNAME="$CLI_HOSTNAME"
-[[ -n "$CLI_VM_IMAGE" ]] && VM_IMAGE="$CLI_VM_IMAGE"
+[[ -n "$CLI_BASE_IMAGE" ]] && BASE_IMAGE="$CLI_BASE_IMAGE"
+[[ -n "$CLI_OVERLAY_DIR" ]] && OVERLAY_DIR="$CLI_OVERLAY_DIR"
 [[ -n "$CLI_MINER_SS58" ]] && MINER_SS58="$CLI_MINER_SS58"
 [[ -n "$CLI_MINER_SEED" ]] && MINER_SEED="$CLI_MINER_SEED"
 
@@ -237,9 +266,19 @@ fi
 
 [[ -n "$CLI_SKIP_BIND" ]] && SKIP_BIND="$CLI_SKIP_BIND"
 [[ -n "$CLI_FOREGROUND" ]] && FOREGROUND="$CLI_FOREGROUND"
+[[ -n "$CLI_SKIP_CHECKSUM" ]] && SKIP_CHECKSUM="true"
 
-[[ -n "$CLI_SSH_PORT" ]] && SSH_PORT="$CLI_SSH_PORT" 
+[[ -n "$CLI_SSH_PORT" ]] && SSH_PORT="$CLI_SSH_PORT"
 [[ -n "$CLI_NETWORK_TYPE" ]] && NETWORK_TYPE="$CLI_NETWORK_TYPE"
+[[ -n "$CLI_EPHEMERAL" ]] && EPHEMERAL="$CLI_EPHEMERAL"
+
+# Default base image and overlay directory when not specified
+[[ -z "$BASE_IMAGE" ]] && BASE_IMAGE="/var/lib/chutes/base-images/tdx-guest.qcow2"
+if [[ "$EPHEMERAL" == "true" ]]; then
+  OVERLAY_DIR="/tmp/chutes-vm-overlays"
+elif [[ -z "$OVERLAY_DIR" ]]; then
+  OVERLAY_DIR="/var/lib/chutes/vm-overlays"
+fi
 
 # Validate network type
 if [[ "$NETWORK_TYPE" != "tap" && "$NETWORK_TYPE" != "user" ]]; then
@@ -250,10 +289,9 @@ fi
 # --------------------------------------------------------------------
 # Validate required parameters (must come from YAML or CLI)
 # --------------------------------------------------------------------
-if [[ -z "$HOSTNAME" || -z "$VM_IMAGE" || -z "$MINER_SS58" || -z "$MINER_SEED" ]]; then
+if [[ -z "$HOSTNAME" || -z "$MINER_SS58" || -z "$MINER_SEED" ]]; then
   echo "Error: Missing required configuration:"
   [[ -z "$HOSTNAME" ]] && echo "  - hostname (vm.hostname or --hostname)"
-  [[ -z "$VM_IMAGE" ]] && echo "  - image (vm.image in config file - required)"
   [[ -z "$MINER_SS58" ]] && echo "  - miner.ss58 (miner.ss58 or --miner-ss58)"
   [[ -z "$MINER_SEED" ]] && echo "  - miner.seed (miner.seed or --miner-seed)"
   echo ""
@@ -277,7 +315,8 @@ echo ""
 echo "=== TEE VM Orchestration ==="
 echo "Config source: ${CONFIG_FILE:-command line only}"
 echo "Hostname: $HOSTNAME"
-echo "Image: $VM_IMAGE"
+echo "Base image: $BASE_IMAGE"
+echo "Overlay dir: $OVERLAY_DIR"
 echo "VM IP: $VM_IP"
 echo "Bridge IP: $BRIDGE_IP"
 echo "Cache volume: $CACHE_VOLUME ($CACHE_SIZE)"
@@ -416,6 +455,20 @@ fi
 echo ""
 
 # --------------------------------------------------------------------
+# Step 4b: Prepare VM image (verify base SHA256, create/reuse overlay)
+# --------------------------------------------------------------------
+echo "Step 4b: Preparing VM image (verify + overlay)..."
+# Use tail -1 to extract only the path; qemu-img create may write "Formatting '...'" to stderr
+# which can be captured when streams are merged (e.g. in some environments)
+SKIP_ARG=""
+[[ "$SKIP_CHECKSUM" == "true" ]] && SKIP_ARG="1"
+OVERLAY_IMAGE=$(./prepare-vm-image.sh "$BASE_IMAGE" "$HOSTNAME" "$EXPECTED_BASE_SHA256" "$OVERLAY_DIR" $SKIP_ARG | tail -1)
+# Pipeline masks exit status; PIPESTATUS[0] is prepare-vm-image's exit code
+[[ ${PIPESTATUS[0]} -ne 0 ]] && { echo "Error: VM image preparation failed (see output above)"; exit 1; }
+[[ -z "$OVERLAY_IMAGE" ]] && { echo "Error: Failed to get overlay image path"; exit 1; }
+echo ""
+
+# --------------------------------------------------------------------
 # Bridge networking
 # --------------------------------------------------------------------
 NET_IFACE=""
@@ -448,7 +501,7 @@ echo "Launching Chutes VM..."
 
 LAUNCH_ARGS=(
   --pass-gpus
-  --image "$VM_IMAGE"
+  --image "$OVERLAY_IMAGE"
   --config-volume "$CONFIG_VOLUME"
   --network-type "$NETWORK_TYPE"
 )
