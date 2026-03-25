@@ -26,15 +26,18 @@ TimeoutStopSec=60
 WatchdogSec=120
 NotifyAccess=main
 
-# Environment
+# Environment (Helm paths under ReadWritePaths so helm works with ProtectHome=true)
 Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+Environment=HELM_CONFIG_HOME={{ helm_config_home }}
+Environment=HELM_CACHE_HOME={{ helm_cache_home }}
+Environment=HELM_DATA_HOME={{ helm_data_home }}
 
 # Security settings
 NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=false
 ProtectHome=true
-ReadWritePaths=/var/lib/rancher/k3s /var/log /etc/rancher/k3s
+ReadWritePaths=/var/lib/rancher/k3s /var/lib/chutes /var/log /etc/rancher/k3s
 
 # Logging
 StandardOutput=journal+console

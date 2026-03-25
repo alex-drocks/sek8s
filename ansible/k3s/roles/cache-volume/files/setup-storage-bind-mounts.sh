@@ -42,6 +42,76 @@ sync_if_empty() {
     fi
 }
 
+# Always sync static files from image to storage so new VM images refresh manifests/registries
+# without deleting the storage volume.
+always_sync_manifests() {
+    local src="/var/lib/rancher/k3s/server/manifests"
+    local dest="${STORAGE_BASE}/k3s/server/manifests"
+    if [[ -d "$src" ]]; then
+        mkdir -p "$dest"
+        if rsync -a --delete "$src/" "$dest/"; then
+            log "Synced manifests: $src -> $dest"
+        else
+            log "ERROR: Failed to sync manifests"
+            exit 1
+        fi
+    fi
+}
+
+# Always sync admission controller certs so manifest caBundle and cert stay paired.
+always_sync_admission_certs() {
+    local src="/etc/admission-controller/certs"
+    local dest="${STORAGE_BASE}/admission-controller-certs"
+    if [[ -d "$src" ]]; then
+        mkdir -p "$dest"
+        if rsync -a --delete "$src/" "$dest/"; then
+            log "Synced admission certs: $src -> $dest"
+        else
+            log "ERROR: Failed to sync admission certs"
+            exit 1
+        fi
+    fi
+}
+
+# Evict stale admission webhook from kine so k3s re-creates it from the manifest on disk.
+# K8s static manifests are not forcefully resynced; some fields (e.g. caBundle) cannot be
+# updated in place. After we sync manifest+certs from the image, we delete the webhook so
+# k3s creates it fresh with the correct caBundle. Expand to other resources as needed.
+evict_stale_admission_webhook() {
+    local db="${STORAGE_BASE}/k3s/server/db/state.db"
+    if [[ -f "$db" ]]; then
+        if python3 - "$db" <<'PYEOF'
+import sqlite3
+import sys
+db = sys.argv[1]
+conn = sqlite3.connect(db)
+conn.execute("DELETE FROM kine WHERE name = ?",
+    ('/registry/validatingwebhookconfigurations/admission-controller-webhook',))
+conn.commit()
+conn.close()
+PYEOF
+        then
+            log "Evicted stale admission webhook from kine (k3s will re-create from manifest)"
+        else
+            log "WARNING: Failed to evict admission webhook from kine"
+        fi
+    fi
+}
+
+always_sync_registries() {
+    local src="/etc/rancher/k3s/registries.yaml"
+    local dest="${STORAGE_BASE}/rancher-config/registries.yaml"
+    if [[ -f "$src" ]]; then
+        mkdir -p "${STORAGE_BASE}/rancher-config"
+        if cp -a "$src" "$dest"; then
+            log "Synced registries.yaml: $src -> $dest"
+        else
+            log "ERROR: Failed to sync registries.yaml"
+            exit 1
+        fi
+    fi
+}
+
 # Create a bind mount from storage to target, skipping if already mounted correctly.
 # Args: $1 = storage path (source), $2 = target mount path
 create_bind_mount() {
@@ -86,9 +156,20 @@ MOUNTS=(
 
 for entry in "${MOUNTS[@]}"; do
     read -r storage_subdir root_path <<< "$entry"
-    storage_path="${STORAGE_BASE}/${storage_subdir}"
-    sync_if_empty "$root_path" "$storage_path"
-    create_bind_mount "$storage_path" "$root_path"
+    sync_if_empty "$root_path" "${STORAGE_BASE}/${storage_subdir}"
+done
+
+# Refresh static image files on every boot so new VM images update manifests/registries/certs.
+always_sync_manifests
+always_sync_registries
+always_sync_admission_certs
+
+# Evict stale admission webhook so k3s re-creates it from the synced manifest.
+evict_stale_admission_webhook
+
+for entry in "${MOUNTS[@]}"; do
+    read -r storage_subdir root_path <<< "$entry"
+    create_bind_mount "${STORAGE_BASE}/${storage_subdir}" "$root_path"
 done
 
 # --- Post-mount fixups for specific volumes ---

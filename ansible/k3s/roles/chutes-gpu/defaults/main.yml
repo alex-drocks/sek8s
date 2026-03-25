@@ -1,10 +1,23 @@
 monitoring_namespace: monitoring
 
 # Chutes chart version from the chutes Helm repo (chutes/chutes-miner-gpu).
-# Leave unset to use the latest chart. Set to a specific version (e.g. 0.1.0-dev.1)
-# to test development charts before release, or when using a debug image.
-# chutes_chart_version: 0.1.0-dev.1
-chutes_chart_version: null
+# Pinned for reproducible builds. The marker file at /etc/chutes/chart-versions/chutes-miner-gpu
+# is derived from this; both define the expected chart version from one release to the next.
+# Override in group_vars or host_vars for debug images (e.g. 0.1.0-dev.1).
+chutes_chart_version: "0.2.1"
+
+# Path to Helm chart signing PGP public key (build-time, like cosign_public_key_path).
+# Required. Override in inventory or group_vars.
+helm_chart_public_key_path: "~/.chutes/helm-pubkey.gpg"
+
+# Helm repo URL for chutes-miner charts (used at build time and inherited by boot script).
+chutes_helm_repo_url: "https://chutesai.github.io/chutes-miner"
+
+# Helm paths; must match k3s role defaults for cluster-init service.
+# On root volume (VM-version-specific); not on storage so no sync needed.
+helm_config_home: /var/lib/chutes/helm-config
+helm_cache_home: /var/lib/chutes/helm-cache
+helm_data_home: /var/lib/chutes/helm-data
 
 # Additional values for the chutes-miner-gpu Helm chart.
 # Merged into a values file and passed with -f. Override in group_vars or host_vars.
