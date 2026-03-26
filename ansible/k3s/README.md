@@ -91,7 +91,7 @@ Host tools automatically configure iptables rules for k3s API (port 6443) and No
 
 ### Configuration Volumes
 
-Production VMs require two attached volumes (created by host tools):
+Production VMs require three attached volumes (created by `quick-launch.sh`):
 
 #### Config Volume (`tdx-config`)
 - **Created by**: `host-tools/scripts/volumes/create-config.sh`
@@ -102,17 +102,25 @@ Production VMs require two attached volumes (created by host tools):
   - `miner-ss58` - Bittensor SS58 address
   - `miner-seed` - Bittensor secret seed
   - `network-config.yaml` - Netplan configuration
+  - `docker-hub-username` - (optional) Docker Hub username for authenticated pulls
+  - `docker-hub-token` - (optional) Docker Hub PAT for authenticated pulls and cosign
 
 #### Cache Volume (`tdx-cache`)
 - **Created by**: `host-tools/scripts/volumes/create-cache.sh`
 - **Filesystem**: XFS with label `tdx-cache`
 - **Mount point**: `/var/snap`
-- **Purpose**: Persistent storage for model caches, container images
-- **K3s data**: entire `/var/lib/rancher/k3s` (server, agent, containerd, init-markers, credentials) is bind-mounted from the storage volume so cluster and node state survive volume replacement.
-- **Chutes agent state**: on storage volume (bind-mounted into `/var/lib/chutes/agent`)
-- **Size**: Configurable (default 500GB)
+- **Purpose**: Persistent storage for HF/model caches (e.g., `/var/snap/cache` for model weights)
+- **Size**: Configurable (default 5000G)
 
-Both volumes are validated at boot. Missing or invalid volumes trigger immediate shutdown.
+#### Storage Volume (`storage`)
+- **Created by**: `host-tools/scripts/volumes/create-cache.sh` (with label `storage`)
+- **Filesystem**: XFS with label `storage`
+- **Mount point**: `/cache/storage` (contents bind-mounted into standard paths)
+- **Purpose**: Persistent k3s state, containerd data, kubelet pods, admission controller certs, and chutes agent state
+- **Bind mounts**: `/var/lib/rancher/k3s`, `/var/lib/kubelet`, `/etc/admission-controller/certs`, `/var/lib/chutes/agent`
+- **Size**: Configurable (default 500G)
+
+All three volumes are validated at boot. Missing or invalid volumes trigger immediate shutdown.
 
 ## Key Components
 
@@ -162,10 +170,10 @@ See role-specific defaults for component configuration.
 This Ansible playbook builds the VM image only. The following are handled by host-tools:
 
 - ❌ TDX-enabled host system setup → See `tdx/setup-tdx-host/`
-- ❌ GPU passthrough configuration → See `host-tools/scripts/bind.sh`
+- ❌ GPU passthrough configuration → Handled automatically by `run-td`
 - ❌ Network infrastructure → See `host-tools/scripts/setup-bridge.sh`
-- ❌ Config/cache volume creation → See `host-tools/scripts/create-*.sh`
-- ❌ VM launch and orchestration → See `host-tools/scripts/launch.sh`
+- ❌ Config/cache/storage volume creation → See `host-tools/scripts/volumes/create-*.sh`
+- ❌ VM launch and orchestration → See `host-tools/scripts/quick-launch.sh`
 - ✅ Guest OS and k3s installation
 - ✅ GPU drivers and attestation services
 - ✅ Security hardening and admission control

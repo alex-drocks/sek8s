@@ -126,30 +126,27 @@ fi
 
 ## Creating Debug VMs
 
-### With quick-launch.sh
+### Download the Debug Image
 
 ```bash
-# Create cache and containerd volumes (unencrypted for debug)
-./host-tools/scripts/quick-launch.sh \
-    --base-image debug-image.qcow2 \
-    --config config.yaml \
-    --cache-size 50G \
-    --containerd-size 100G \
-    --name debug-vm
+cd host-tools/scripts
+./quick-launch.sh --download-debug
 ```
 
-### Manual Launch
+This downloads the debug image to `/var/lib/chutes/base-images/tdx-guest-debug.qcow2`.
+
+### Launch with quick-launch.sh
+
+Use the debug example config as a starting point:
 
 ```bash
-# Create unencrypted volumes with labels (raw format, XFS)
-./host-tools/scripts/volumes/create-cache.sh cache.raw 50G tdx-cache
-
-# Run VM with cache volume attached
-./host-tools/scripts/run-td \
-    --image debug-image.qcow2 \
-    --config config.iso \
-    --cache-volume cache.raw
+cd host-tools/scripts
+cp config/config.debug.example.yaml config.yaml
+# Edit config.yaml with your credentials and network settings
+./quick-launch.sh config.yaml --foreground
 ```
+
+The debug config sets `vm.base_image` to the debug image path and uses smaller volume sizes. See [`config/config.debug.example.yaml`](../host-tools/scripts/config/config.debug.example.yaml) for the full template.
 
 ## Benefits
 

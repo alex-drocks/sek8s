@@ -11,6 +11,7 @@ This guide walks you through setting up a baremetal host to launch TDX-enabled V
 - **Access**: Root/sudo privileges
 - **Network**: Public network interface (e.g., `ens9f0np0`)
 - **Python**: Python 3 with PyYAML (`pip3 install pyyaml`)
+- **aria2**: For downloading VM images (`sudo apt install aria2`)
 
 ## Architecture Overview
 
@@ -19,8 +20,9 @@ The setup creates this architecture:
 Internet ←→ Public Interface ←→ Bridge ←→ TAP ←→ TDX VM
                                             ↓
                                       GPU Passthrough (PPCIe Mode)
-                                      Config Volume (credentials)
-                                      Cache Volume (container storage)
+                                      Config Volume (credentials + Docker Hub auth)
+                                      Cache Volume (HF/model caches)
+                                      Storage Volume (k3s + containerd + kubelet)
                                       k3s Cluster
 ```
 
@@ -33,22 +35,22 @@ Internet ←→ Public Interface ←→ Bridge ←→ TAP ←→ TDX VM
 For those familiar with the setup, here's the complete sequence:
 ```bash
 # 1. Setup TDX host (one-time)
-# Edit setup-tdx-config
-nano tdx/setup-tdx-config
-TDX_SETUP_ATTESTATION=1
+nano tdx/setup-tdx-config   # set TDX_SETUP_ATTESTATION=1
 cd tdx/setup-tdx-host && sudo ./setup-tdx-host.sh && sudo reboot
 
 # 2. Configure PCCS
 pccs-configure
 
-# 3. Download guest image (see Step 3 below)
+# 3. Download guest image
+cd host-tools/scripts
+./quick-launch.sh --download
 
 # 4. Create configuration from template
 ./quick-launch.sh --template
 # Edit config.yaml with your settings
 
-# 5. Launch VM (GPU binding + prep run automatically unless --skip-bind)
-./quick-launch.sh config.yaml [--miner-ss58 <ss58>] [--miner-seed <seed>(no 0x prefix)]
+# 5. Launch VM (GPU config, binding, volumes, and networking run automatically)
+./quick-launch.sh config.yaml
 ```
 
 ---
@@ -114,20 +116,14 @@ https://api.portal.trustedservices.intel.com/
 
 ### Step 3: Download the VM Image
 
-Download the prebuilt VM image from R2 to the name the scripts expect:
+Download the prebuilt VM image using `quick-launch.sh` (requires `aria2`):
 ```bash
-cd guest-tools/image
-curl -L \
-  -C - \
-  --retry 10 \
-  --retry-delay 5 \
-  --retry-all-errors \
-  --speed-time 30 \
-  --speed-limit 1048576 \
-  --connect-timeout 10 \
-  --max-time 0 \
-  -O https://vm.chutes.ai/tdx-guest.qcow2
+cd host-tools/scripts
+./quick-launch.sh --download          # production image
+./quick-launch.sh --download-debug    # debug image (SSH enabled, no encryption)
 ```
+
+Images are saved to `/var/lib/chutes/base-images/`. The production image lands at `/var/lib/chutes/base-images/tdx-guest.qcow2`, which is the default path used by `quick-launch.sh`.
 
 ---
 
@@ -141,51 +137,58 @@ cd host-tools/scripts
 
 This creates `config.yaml`. Edit it with your deployment settings:
 ```yaml
-# VM Identity
 vm:
   hostname: chutes-miner-tee-0
+  base_image: ""       # Empty = /var/lib/chutes/base-images/tdx-guest.qcow2
+  overlay_directory: "" # Empty = /var/lib/chutes/vm-overlays/
 
-# Miner Credentials - Can also provide via CLI
 miner:
-  ss58: "<ss58>"  # Your actual SS58 address
-  seed: "<seed>"  # Your actual miner seed, no 0x prefix
+  ss58: "<your_ss58_address>"
+  seed: "<your_seed_no_0x_prefix>"
 
-# Network Configuration
+# Optional: Docker Hub credentials for authenticated pulls (avoids anonymous rate limits)
+# docker_hub:
+#   username: "your_dockerhub_username"
+#   token: "dckr_pat_..."
+
 network:
   vm_ip: "192.168.100.2"
   bridge_ip: "192.168.100.1/24"
   dns: "8.8.8.8"
   public_interface: "ens9f0np0"  # Change to match your hardware
+  type: "tap"
 
-# Volume Configuration
 volumes:
   cache:
-    enabled: true
-  size: "5000G"
-    path: ""  # Leave empty to auto-create
+    size: "5000G"
+    path: ""  # Empty = cache-<hostname>.raw (auto-created)
+  storage:
+    size: "500G"
+    path: ""  # Empty = storage-<hostname>.raw (auto-created)
   config:
-    path: ""  # Leave empty to auto-create
+    path: ""  # Empty = config-<hostname>.qcow2 (auto-created)
 
-# Device Configuration
 devices:
-  bind_devices: true  # Set to false to skip GPU binding
+  bind_devices: true
 
-# Runtime Configuration
 runtime:
-  foreground: false  # Set to true for foreground mode (Ignored for prod image)
+  foreground: false
 ```
+
+See [`config/CONFIG-GUIDE.md`](scripts/config/CONFIG-GUIDE.md) for the full schema reference and validation details.
 
 > **Note:** Memory, vCPU count, GPU MMIO, and PCI hole sizing are fixed inside
 > `run-td` to preserve RTMR determinism. These canonical values are baked into
-> the script and are not configurable via CLI flags.
+> the script and are not configurable.
 
 **Required Configuration:**
-- `hostname`: Unique identifier for this miner
+- `vm.hostname`: Unique identifier for this miner
+- `miner.ss58` / `miner.seed`: Your substrate credentials
 - `network.public_interface`: Your host's public network interface name
 
 **Optional Configuration:**
-- `miner.ss58`: Your substrate SS58 address
-- `miner.seed`: Your miner's seed phrase or private key, no 0x prefix
+- `docker_hub`: Docker Hub username + read-only PAT for authenticated container pulls and cosign verification. Without it, the VM uses anonymous Hub quota which is often too low.
+- `vm.base_image` / `vm.overlay_directory`: Override default image and overlay paths.
 
 **Network Configuration:**
 - The IP addresses should match your network topology
@@ -198,23 +201,23 @@ runtime:
 
 With your configuration file ready, launch the VM:
 ```bash
-./quick-launch.sh config.yaml [--miner-ss58 <ss58>] [--miner-seed <seed>(no 0x prefix)]
+./quick-launch.sh config.yaml
 ```
 
 The script will automatically:
-1. **Validate host configuration** - Currently checks for `kvm_intel.tdx=1`
-2. **Bind NVIDIA devices** - Runs `bind.sh` to attach GPUs/NVSwitch to `vfio-pci` (skip with `--skip-bind`)
-3. **Prepare GPUs** - `run-td` invokes `tdx/gpu-cc/h100/setup-gpus.sh` to configure PPCIe/CC settings on each launch
-4. **Create cache volume** - Set up container storage (if not existing)
-5. **Create config volume** - Package credentials and network config
-6. **Setup bridge networking** - Configure isolated network with NAT
-7. **Launch TDX VM** - Start the VM with all components
+1. **Validate host configuration** - Checks TDX module is initialized and NUMA zone reclaim is disabled
+2. **Prepare cache volume** - Creates `cache-<hostname>.raw` (XFS, for HF/model caches at `/var/snap`)
+3. **Prepare storage volume** - Creates `storage-<hostname>.raw` (XFS, for k3s, containerd, and kubelet)
+4. **Create config volume** - Packages credentials, network config, and optional Docker Hub auth into `config-<hostname>.qcow2`
+5. **Verify base image** - SHA256 checksum of the base qcow2, then creates/reuses a qcow2 overlay
+6. **Setup bridge networking** - Configures isolated bridge network with NAT
+7. **Launch TDX VM** - `run-td` detects GPUs, configures PPCIe/CC modes, binds devices to `vfio-pci`, and boots the VM
 
 **What happens during launch:**
-- Cache volume is created at `cache-<hostname>.qcow2`
-- Inside the guest, k3s containerd data (`/var/lib/rancher/k3s/agent/containerd`) is mounted from an encrypted containerd cache volume
-- General cache (`/var/snap`) persists across reboots for miner state
-- Config volume is created at `config-<hostname>.qcow2` (always fresh, contains miner credentials for attestation)
+- Cache volume at `cache-<hostname>.raw` is mounted as `/var/snap` in the guest (HF model caches)
+- Storage volume at `storage-<hostname>.raw` holds `/var/lib/rancher/k3s`, `/var/lib/kubelet`, admission controller certs, and chutes agent state
+- Config volume at `config-<hostname>.qcow2` is refreshed on each launch with current credentials
+- Overlay image at `/var/lib/chutes/vm-overlays/tdx-<hostname>-<sha>.qcow2` preserves the base image
 - Bridge network `br0` is configured with TAP interface
 - NAT rules are applied for k3s API (6443) and NodePorts (30000-32767)
 - VM starts in daemon mode with PID tracking
@@ -255,9 +258,7 @@ This removes:
 - Bridge network and TAP interfaces
 - iptables NAT rules
 
-GPU bindings are also reverted via `unbind.sh`; rerun `bind.sh` if you need to reattach without launching.
-
-**Note**: Volume files (cache and config) are NOT deleted during cleanup.
+**Note**: Volume files (cache, storage, and config) are NOT deleted during cleanup. GPU devices remain in their current state and will be reconfigured automatically on the next launch.
 
 ---
 
@@ -265,47 +266,22 @@ GPU bindings are also reverted via `unbind.sh`; rerun `bind.sh` if you need to r
 
 ### Command Line Overrides
 
-Override configuration file settings via command line:
+CLI flags override values from `config.yaml`. Common overrides:
 ```bash
-# Run in foreground mode
+# Run in foreground mode (see all output)
 ./quick-launch.sh config.yaml --foreground
 
-# Use existing cache volume
-./quick-launch.sh config.yaml --cache-volume /path/to/existing-cache.qcow2
-
-# Change cache size before creation
-./quick-launch.sh config.yaml --cache-size 1T
+# Use a custom base image
+./quick-launch.sh config.yaml --base-image /path/to/custom-tdx-guest.qcow2
 
 # Override VM IP
 ./quick-launch.sh config.yaml --vm-ip 192.168.100.5
+
+# Provide Docker Hub credentials via CLI instead of config file
+./quick-launch.sh config.yaml --docker-hub-username user --docker-hub-token dckr_pat_xxx
 ```
 
-Note: Cache volume creation is required. `--skip-bind` only affects GPU binding to `vfio-pci` during launch.
-
-### Manual Component Management
-
-For advanced users who want to manage components separately:
-```bash
-# Manually bind devices
-./bind.sh
-
-# Manually create cache volume (raw format, XFS)
-sudo ./volumes/create-cache.sh cache.raw 5000G tdx-cache
-
-# Create or refresh config qcow2 (existing file is updated in place)
-sudo ./volumes/create-config.sh config.qcow2 hostname ss58 seed vm-ip gateway dns
-
-# Manually setup network
-./setup-bridge.sh --bridge-ip 192.168.100.1/24 \
-                  --vm-ip 192.168.100.2/24 \
-                  --public-iface ens9f0np0
-
-# Manually launch VM
-python3 ./run-td --config-volume config.qcow2 \
-                 --cache-volume cache.raw \
-                 --network-type tap \
-                 --net-iface vmtap0
-```
+For the full list of options, run `./quick-launch.sh --help`. Volume sizes and paths are best managed through `config.yaml` rather than CLI flags.
 
 ---
 
@@ -361,25 +337,25 @@ curl -k https://<host_public_ip>:6443
 ### Common Issues
 
 **Issue: "VM fails to start with GPU errors"**
+
+Relaunch the VM -- `run-td` automatically detects, configures, and binds GPUs on each launch:
 ```bash
-# Manual reset
-./reset-gpus.sh
-./bind.sh
-
-OR
-
-# Launch again, will auto rebind
 ./quick-launch.sh config.yaml
 ```
 
 **Issue: "GPU appears stuck or unhealthy"**
+
+`nvidia-gpu-tools` is bundled and installed automatically by `run-td`. No host NVIDIA driver is needed.
 ```bash
-# Use gpu-admin-tools recovery (no host driver needed and none should be installed)
-git clone https://github.com/NVIDIA/gpu-admin-tools.git  # if not already present
-cd gpu-admin-tools/host_tools/python
-sudo python3 ./nvidia_gpu_tools.py --fix-broken-gpu --gpu-bdf=<bdf>
+# Recover a broken GPU
+sudo nvidia-gpu-tools --recover-broken-gpu --gpu-bdf=<bdf>
+
+# Secondary Bus Reset (more aggressive)
+sudo nvidia-gpu-tools --reset-with-sbr --gpu-bdf=<bdf>
+
+# Query current CC/PPCIe mode
+sudo nvidia-gpu-tools --query-cc-mode
 ```
-Drivers should not be installed on the host; rely on `nvidia_gpu_tools.py` utilities for recovery tasks.
 
 **Issue: "Network not accessible"**
 ```bash
@@ -410,11 +386,12 @@ Once the VM is running:
 
 ## File Locations
 
-- **VM Image (default target)**: `guest-tools/image/tdx-guest.qcow2` (or set `TD_IMG`)
-- **Alternate image shipped**: `guest-tools/image/tdx-guest-ubuntu-24.04.qcow2` (symlink or export `TD_IMG` to use)
-- **Firmware**: `firmware/TDVF.fd` (run-td)
-- **Cache Volumes**: `host-tools/scripts/cache-*.qcow2`
-- **Config Volumes**: `host-tools/scripts/config-*.qcow2`
+- **Base VM Image**: `/var/lib/chutes/base-images/tdx-guest.qcow2` (downloaded via `--download`)
+- **Overlay Images**: `/var/lib/chutes/vm-overlays/tdx-<hostname>-<sha>.qcow2`
+- **Firmware**: `firmware/TDVF.fd` (bundled with run-td)
+- **Cache Volumes**: `host-tools/scripts/cache-<hostname>.raw`
+- **Storage Volumes**: `host-tools/scripts/storage-<hostname>.raw`
+- **Config Volumes**: `host-tools/scripts/config-<hostname>.qcow2`
 - **VM Logs**: `/tmp/tdx-guest-td.log`
 - **QEMU Logs**: `/tmp/qemu.log`
 - **VM PID**: `/tmp/tdx-td-pid.pid`
@@ -423,9 +400,10 @@ Once the VM is running:
 
 ## Security Considerations
 
-- **Config Volume**: Contains sensitive credentials (miner seed/SS58). Store securely and restrict access.
-- **Cache Volume**: Unencrypted storage for container images. Only use for non-sensitive data.
-- **Root Disk**: Encrypted by TDX. All OS and application data is protected.
+- **Config Volume**: Contains sensitive credentials (miner seed/SS58, Docker Hub token). Store securely and restrict access.
+- **Cache Volume**: LUKS-encrypted in production (unencrypted in debug). Used for HF/model caches.
+- **Storage Volume**: LUKS-encrypted in production. Holds k3s state, containerd data, and kubelet pods.
+- **Root Disk**: LUKS-encrypted. All OS and application data is protected.
 - **Network Isolation**: VMs are isolated via NAT. Only exposed ports are accessible externally.
 - **PPCIe Mode**: Provides memory encryption and attestation for GPUs, but not full CC mode protection.
 
@@ -433,8 +411,9 @@ Once the VM is running:
 
 ## Additional Documentation
 
-- [Cache Volume Details](../docs/CACHE.md) - In-depth cache volume information
-- [GPU Admin Tools](https://github.com/NVIDIA/gpu-admin-tools) - NVIDIA CC mode management
+- [Cache Volume Details](docs/CACHE.md) - In-depth cache volume information
+- [Configuration Guide](scripts/config/CONFIG-GUIDE.md) - Full config schema reference and validation
+- [GPU Admin Tools](https://github.com/NVIDIA/gpu-admin-tools) - NVIDIA CC mode management (bundled as `nvidia-gpu-tools`)
 - [Intel TDX Documentation](https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html)
 
 ---

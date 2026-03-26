@@ -421,11 +421,7 @@ echo "✓ NUMA zone reclaim disabled (vm.zone_reclaim_mode=0)"
 echo "✓ Host configuration verified"
 echo ""
 
-# --------------------------------------------------------------------
-# Device binding is now handled by run-td script
-# --------------------------------------------------------------------
-# Note: Device binding to vfio-pci is now done inside prepare_gpus()
-# in the run-td script, so we no longer need to call bind.sh separately
+# Device binding to vfio-pci is handled inside run-td (chutes_host.passthrough)
 echo ""
 
 

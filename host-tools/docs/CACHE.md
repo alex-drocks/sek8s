@@ -124,20 +124,21 @@ sudo qemu-nbd --disconnect /dev/nbd0
 echo "Cache volume ready: /path/to/cache-volume.raw"
 ```
 
-## Using the Cache Volume with run-tdx.sh
+## Using the Cache Volume
 
-Once the cache volume is prepared, pass it to the TDX launch script:
+`quick-launch.sh` creates cache and storage volumes automatically based on your `config.yaml`. You normally don't need to create them manually. If you do pre-create a cache volume, reference it in your config:
+
+```yaml
+volumes:
+  cache:
+    size: "5000G"
+    path: "/path/to/cache-volume.raw"
+```
+
+Then launch as usual:
 
 ```bash
-./run-tdx.sh \
-  --cache-volume /path/to/cache-volume.qcow2 \
-  --hostname my-tdx-miner \
-  --miner-ss58 'your_ss58_address' \
-  --miner-seed 'your_seed' \
-  --network-type macvtap \
-  --net-iface vmnet-12345678 \
-  --vm-ip 192.168.100.2 \
-  --vm-gateway 192.168.100.1
+./quick-launch.sh config.yaml
 ```
 
 ## Verification at Boot
@@ -148,8 +149,6 @@ Once the cache volume is prepared, pass it to the TDX launch script:
 **If the cache device is missing or verification fails, the VM will shut down.** Check the serial log for error details:
 
 ```bash
-./run-tdx.sh --status
-# Or directly:
 cat /tmp/tdx-guest-td.log
 ```
 
@@ -234,19 +233,17 @@ sudo qemu-nbd --disconnect /dev/nbd0
 - **Raw format**: Raw images allocate full size upfront; use `qemu-img info` to verify
 - **Monitoring**: Check actual disk usage with `qemu-img info cache-volume.raw`
 
+## Storage Volume
+
+In addition to the cache volume (HF/model caches at `/var/snap`), the guest requires a **storage volume** for k3s state, containerd data, kubelet pods, admission controller certs, and chutes agent state. This volume is created by `quick-launch.sh` using the same `create-cache.sh` script with the label `storage`. It is configured via `volumes.storage` in `config.yaml`.
+
+See the [host-tools README](../README.md) for the full volume architecture.
+
 ## File Locations
 
-- Cache volumes: Store alongside your VM images (e.g., `guest-tools/volumes/`)
-- Documentation: This file should be in your repository root or docs folder
-- Scripts: Helper scripts in `scripts/` or project root
-
-## Next Steps
-
-After creating the cache volume:
-
-1. Update your TDX base image with the verification service (see CACHE-VOLUME-GUEST-SETUP.md)
-2. Test the cache volume with a test VM before production use
-3. Document your specific cache volume locations and sizes for your deployment
+- Cache volumes: `host-tools/scripts/cache-<hostname>.raw`
+- Storage volumes: `host-tools/scripts/storage-<hostname>.raw`
+- Config volumes: `host-tools/scripts/config-<hostname>.qcow2`
 
 ## References
 
