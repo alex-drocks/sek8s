@@ -1,3 +1,8 @@
+.PHONY: install-hooks
+install-hooks: ##@development Install git hooks (blocks sensitive pushes to public repo)
+	git config core.hooksPath .githooks
+	@echo "Git hooks installed. Pre-push guard active."
+
 .PHONY: install
 install: ##@development Instal development dependencies
 install: venv

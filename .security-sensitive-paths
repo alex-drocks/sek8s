@@ -1,0 +1,4 @@
+docs/security/
+SECURITY.md
+scripts/security/
+makefiles/security.mk
