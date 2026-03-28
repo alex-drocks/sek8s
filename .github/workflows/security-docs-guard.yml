@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   scrub-push:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.repository == 'chutesai/sek8s'
     runs-on: ubuntu-latest
     steps:
       - name: Delete branch with sensitive files
@@ -34,7 +34,7 @@ jobs:
           exit 1
 
   check-pr:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.repository == 'chutesai/sek8s'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
