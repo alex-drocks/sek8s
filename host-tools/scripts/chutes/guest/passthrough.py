@@ -18,6 +18,7 @@ from chutes.guest.vfio import (
     bind_explicit_devices_to_vfio,
     ensure_sriov_vfs,
     install_udev_rules,
+    virsh_bind_device,
 )
 
 _gpu_tools_cmd: str | None = None
@@ -79,10 +80,7 @@ def _prepare_devices(
     ib_devices: list[str],
     profile: GpuProfile,
 ):
-    """Configure CC/PPCIe modes with nvidia-gpu-tools, bind BDFs to vfio-pci, install udev rules.
-
-    Order: NVSwitch mode (if applicable), GPU mode, vfio bind, udev rules.
-    """
+    """Configure CC/PPCIe modes, bind to vfio-pci, virsh nodedev reattach/detach, udev rules."""
     total_gpus = len(gpus)
 
     _configure_nvswitches(nvswitches, profile, total_gpus)
@@ -96,6 +94,11 @@ def _prepare_devices(
 
     print('  Binding devices to vfio-pci (explicit BDF list)...')
     bind_explicit_devices_to_vfio(devices_to_bind)
+
+    for gpu in gpus:
+        virsh_bind_device(gpu)
+    for ib_dev in ib_devices:
+        virsh_bind_device(ib_dev)
 
     install_udev_rules(_scripts_dir())
 
