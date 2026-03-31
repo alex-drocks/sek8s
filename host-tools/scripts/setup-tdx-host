@@ -5,15 +5,16 @@ Detects the Ubuntu version, resolves the matching host profile, and
 executes the setup steps (PPAs, kernel, packages, GRUB, kvm group).
 
 Usage:
-    sudo ./setup-tdx-host              # auto-detect Ubuntu from lsb_release
-    ./setup-tdx-host --topology-matrix # print lab-validated Ubuntu × GPU × count
+    sudo ./setup-tdx-host                    # auto-detect Ubuntu from lsb_release
+    sudo ./setup-tdx-host --install-tools-only  # dependencies only (same as full setup step 7)
+    ./setup-tdx-host --topology-matrix       # print lab-validated Ubuntu × GPU × count
 """
 
 import argparse
 import sys
 
 from chutes.host.profiles import resolve_profile
-from chutes.host.setup import setup_host
+from chutes.host.setup import install_dependencies, setup_host
 from chutes.host.support_matrix import format_topology_matrix
 
 
@@ -26,10 +27,19 @@ def main() -> int:
         action="store_true",
         help="Print lab-validated Ubuntu × GPU × count combinations and exit",
     )
+    parser.add_argument(
+        "--install-tools-only",
+        action="store_true",
+        help="Install host dependencies (CLI symlinks + nvidia-gpu-tools); then exit",
+    )
     args = parser.parse_args()
 
     if args.topology_matrix:
         print(format_topology_matrix())
+        return 0
+
+    if args.install_tools_only:
+        install_dependencies()
         return 0
 
     try:

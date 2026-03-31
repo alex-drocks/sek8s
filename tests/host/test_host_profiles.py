@@ -15,7 +15,11 @@ from chutes.host.profiles import (
     Ubuntu2510Profile,
     resolve_profile,
 )
-from chutes.host.setup import _get_kernel_version, setup_host
+from chutes.host.setup import (
+    _get_kernel_version,
+    install_dependencies,
+    setup_host,
+)
 
 # ---------------------------------------------------------------------------
 # PPA dataclass
@@ -231,7 +235,7 @@ def test_get_kernel_version_raises_on_no_match(mock_run):
 # ---------------------------------------------------------------------------
 
 
-@patch("chutes.host.setup._install_cli_tools")
+@patch("chutes.host.setup.install_dependencies")
 @patch("chutes.host.setup._add_user_to_kvm")
 @patch("chutes.host.setup._grub_update_cmdline")
 @patch("chutes.host.setup._grub_set_kernel")
@@ -245,7 +249,7 @@ def test_setup_host_calls_all_steps(
     mock_grub_kernel,
     mock_grub_cmdline,
     mock_kvm,
-    mock_cli,
+    mock_install_deps,
 ):
     profile = Ubuntu2510Profile()
     setup_host(profile)
@@ -254,12 +258,29 @@ def test_setup_host_calls_all_steps(
     mock_grub_kernel.assert_called_once_with("6.17.0-15-generic")
     mock_grub_cmdline.assert_called_once_with(profile.grub_cmdline_additions)
     mock_kvm.assert_called_once()
-    mock_cli.assert_called_once()
+    mock_install_deps.assert_called_once()
 
     install_calls = [
         c for c in mock_run.call_args_list if len(c[0]) > 0 and "install" in c[0][0]
     ]
     assert len(install_calls) > 0, "apt install should have been called"
+
+
+@patch("chutes.guest.gpu.tools.ensure_gpu_tools_available")
+@patch("chutes.host.setup._symlink_host_bin_tools")
+@patch("os.geteuid", return_value=0)
+def test_install_dependencies_runs_symlink_and_gpu_tools(
+    mock_euid, mock_symlink, mock_ensure_gpu
+):
+    install_dependencies()
+    mock_symlink.assert_called_once()
+    mock_ensure_gpu.assert_called_once()
+
+
+@patch("os.geteuid", return_value=1000)
+def test_install_dependencies_exits_if_not_root(mock_euid):
+    with pytest.raises(SystemExit):
+        install_dependencies()
 
 
 @patch("os.geteuid", return_value=1000)

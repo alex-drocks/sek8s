@@ -1,8 +1,4 @@
-"""Profile-driven GPU passthrough orchestration.
-
-Replaces the old add_gpu_passthrough() + prepare_gpus() with a single
-entry point that uses GpuProfile to drive all type-specific decisions.
-"""
+"""GPU passthrough for QEMU using per-SKU GpuProfile rules."""
 
 import os
 import subprocess
@@ -47,15 +43,6 @@ def _scripts_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _sbr_reset_gpus():
-    """SBR reset all GPUs to ensure clean state before mode configuration."""
-    print('  Performing SBR reset of GPUs...')
-    try:
-        _run_gpu_tools('--reset-with-sbr', '--reset-after-ppcie-mode-switch')
-    except subprocess.CalledProcessError as e:
-        print(f'  Warning: SBR reset failed (exit {e.returncode}), proceeding with mode config')
-
-
 def _configure_nvswitches(
     nvswitches: list[str],
     profile: GpuProfile,
@@ -92,23 +79,12 @@ def _prepare_devices(
     ib_devices: list[str],
     profile: GpuProfile,
 ):
-    """SBR reset, configure modes, bind to VFIO, and install udev rules.
+    """Configure CC/PPCIe modes with nvidia-gpu-tools, bind BDFs to vfio-pci, install udev rules.
 
-    Order: SBR -> configure modes (nvidia-gpu-tools) -> sysfs vfio bind.
-
-    TDX hosts intentionally do **not** install the proprietary NVIDIA driver
-    (incompatible with the TDX kernel). ``nvidia-gpu-tools`` is used for CC/PPCIe
-    and SBR without that stack. We therefore do **not** use ``virsh
-    nodedev-reattach`` (that path assumes a normal host driver such as ``nvidia``).
-    QEMU + iommufd only needs devices on ``vfio-pci`` via sysfs.
-
-    Canonical ``setup-gpus.sh`` differs: it targets hosts where the GPU stays on
-    the NVIDIA driver until libvirt detach. Relaunch edge cases here are handled
-    by SBR / gpu-tools recovery per host-tools README, not libvirt.
+    Order: NVSwitch mode (if applicable), GPU mode, vfio bind, udev rules.
     """
     total_gpus = len(gpus)
 
-    _sbr_reset_gpus()
     _configure_nvswitches(nvswitches, profile, total_gpus)
     _configure_gpus(gpus, profile, total_gpus)
 
@@ -175,10 +151,7 @@ def _build_pci_topology(
 
 
 def setup_passthrough(cmd: list[str]):
-    """Discover, prepare, and add all passthrough devices to the QEMU command.
-
-    This is the single entry point called by __main__.launch_vm().
-    """
+    """Detect passthrough devices, prepare and bind them on the host, extend cmd for QEMU."""
     gpus = get_gpu_bdfs()
     if not gpus:
         gpus = detect_nvidia_gpus()

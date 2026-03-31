@@ -365,7 +365,7 @@ Relaunch the VM -- `run-td` automatically detects, configures, and binds GPUs on
 
 **Issue: "GPU appears stuck or unhealthy"**
 
-`nvidia-gpu-tools` is bundled and installed automatically by `run-td`. No host NVIDIA driver is needed. GPUs are also SBR-reset automatically on every VM launch.
+`nvidia-gpu-tools` is bundled and installed automatically by `run-td`. No host NVIDIA driver is needed. After stopping the VM, use `chutes-reset-gpus` for a Secondary Bus Reset on all GPUs. To install or refresh host dependencies on an existing machine, run **`sudo ./setup-tdx-host --install-tools-only`** from `host-tools/scripts/` (same as step 7 of full setup).
 ```bash
 # Recover a broken GPU
 sudo nvidia-gpu-tools --recover-broken-gpu --gpu-bdf=<bdf>

@@ -228,6 +228,7 @@ def setup_host(profile: HostProfile):
     4. Set kernel as default boot target
     5. Update GRUB cmdline
     6. Add user to kvm group
+    7. Install dependencies (CLI symlinks + nvidia-gpu-tools)
     """
     print(f"\n{'=' * 60}")
     print(f"  TDX Host Setup: {profile.describe()}")
@@ -281,22 +282,22 @@ def setup_host(profile: HostProfile):
     print("\nStep 6: Configuring kvm group...")
     _add_user_to_kvm()
 
-    # 7. CLI tools
-    print("\nStep 7: Installing CLI tools...")
-    _install_cli_tools()
+    # 7. Host dependencies (repo CLIs + nvidia-gpu-tools)
+    print("\nStep 7: Installing dependencies...")
+    install_dependencies()
 
     print(f"\n{'=' * 60}")
     print("  TDX host setup complete. Reboot to load the new kernel.")
     print(f"{'=' * 60}\n")
 
 
-def _install_cli_tools():
-    """Symlink host-tools/bin/ CLI tools into /usr/local/bin/."""
+def _symlink_host_bin_tools() -> None:
+    """Symlink host-tools/bin executables into /usr/local/bin/."""
     scripts_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     bin_dir = os.path.join(os.path.dirname(scripts_dir), "bin")
 
     if not os.path.isdir(bin_dir):
-        print(f"  Warning: {bin_dir} not found, skipping CLI tool installation")
+        print(f"  Warning: {bin_dir} not found, skipping CLI symlinks")
         return
 
     for tool in os.listdir(bin_dir):
@@ -312,3 +313,22 @@ def _install_cli_tools():
                 continue
         print(f"  Linking {tool} -> {dst}")
         os.symlink(os.path.abspath(src), dst)
+
+
+def install_dependencies() -> None:
+    """Symlink host-tools/bin into /usr/local/bin and ensure nvidia-gpu-tools is available.
+
+    When the CLI is missing, installs from the bundled wheel (venv under gpu-tools/).
+    Must run as root.
+    """
+    if os.geteuid() != 0:
+        print("Error: install_dependencies must run as root (sudo).", file=sys.stderr)
+        sys.exit(1)
+
+    print("\n=== Install dependencies ===\n")
+    _symlink_host_bin_tools()
+    print("\nEnsuring nvidia-gpu-tools (bundled wheel if missing)...")
+    from chutes.guest.gpu.tools import ensure_gpu_tools_available
+
+    ensure_gpu_tools_available()
+    print("\nDone.\n")
