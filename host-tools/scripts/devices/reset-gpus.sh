@@ -42,8 +42,30 @@ case "${1:-}" in
         ;;
 esac
 
-if pgrep -f "$PROCESS_NAME" > /dev/null 2>&1; then
-    echo "Error: VM process '$PROCESS_NAME' is running."
+# Non-zombie QEMU whose cmdline includes this guest name (-name / process=).
+_live_chutes_td_qemu_running() {
+    local pid state cmdline
+    while read -r pid; do
+        [[ -z "$pid" ]] && continue
+        [[ -r "/proc/$pid/stat" ]] || continue
+        state=$(ps -p "$pid" -o stat= 2>/dev/null || echo "")
+        [[ "$state" == Z* ]] && continue
+        cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || echo "")
+        if [[ "$cmdline" != *qemu-system* && "$cmdline" != *qemu-kvm* ]]; then
+            continue
+        fi
+        [[ "$cmdline" == *"$PROCESS_NAME"* ]] || continue
+        return 0
+    done < <(
+        { pgrep -f 'qemu-system' 2>/dev/null || true
+          pgrep -f 'qemu-kvm' 2>/dev/null || true
+        } | sort -un
+    )
+    return 1
+}
+
+if _live_chutes_td_qemu_running; then
+    echo "Error: TDX VM (QEMU, $PROCESS_NAME) is running."
     echo ""
     echo "Stop the VM gracefully before resetting GPUs:"
     echo "  chutes-miner tee shutdown --ip <HOST_IP> --confirm"
