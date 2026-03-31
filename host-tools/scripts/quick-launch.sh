@@ -562,7 +562,11 @@ LAUNCH_ARGS+=(--storage-volume "$STORAGE_VOLUME")
 [[ "$FOREGROUND" == "true" ]] && LAUNCH_ARGS+=(--foreground)
 
 # Call Python runner
-python3 ./run-td "${LAUNCH_ARGS[@]}"
+if ! python3 ./run-td "${LAUNCH_ARGS[@]}"; then
+  echo ""
+  echo "Error: VM launch failed (run-td exited non-zero). See output above and /tmp/tdx-guest-td.log if daemonized."
+  exit 1
+fi
 
 echo ""
 echo "=== Chutes VM Deployed Successfully ==="

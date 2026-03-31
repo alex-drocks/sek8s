@@ -1,0 +1,40 @@
+"""Tests for chutes.guest.__main__ (run-td launcher)."""
+
+from unittest.mock import MagicMock, patch
+
+import chutes.guest.__main__ as guest_main
+
+
+@patch("chutes.guest.__main__.subprocess.run")
+@patch("chutes.guest.__main__.setup_passthrough")
+@patch("chutes.guest.__main__.add_vsock")
+@patch("chutes.guest.__main__.add_volumes")
+@patch("chutes.guest.__main__.build_network")
+@patch(
+    "chutes.guest.__main__.build_base_cmd",
+    return_value=["qemu-system-x86_64", "-version"],
+)
+def test_launch_vm_returns_qemu_nonzero(
+    _mock_base,
+    _mock_net,
+    _mock_vol,
+    _mock_vsock,
+    _mock_pt,
+    mock_run,
+):
+    from argparse import Namespace
+
+    mock_run.return_value = MagicMock(returncode=1)
+    args = Namespace(
+        image="/tmp/fake.img",
+        pass_gpus=False,
+        foreground=True,
+        config_volume=None,
+        cache_volume=None,
+        storage_volume=None,
+        ssh_port=10022,
+        network_type="user",
+        net_iface=None,
+        net_queues=4,
+    )
+    assert guest_main.launch_vm(args) == 1

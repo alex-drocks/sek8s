@@ -52,7 +52,7 @@ def stop_existing_vm():
     print("Clean VM")
     try:
         with open(PIDFILE) as pid_file:
-            pid = int(pid_file.read())
+            pid = int(pid_file.read().strip())
             os.kill(pid, signal.SIGTERM)
             time.sleep(3)
         os.remove(PIDFILE)
@@ -60,11 +60,10 @@ def stop_existing_vm():
         pass
 
 
-def launch_vm(args):
+def launch_vm(args) -> int:
     mem = DEFAULT_MEM
     vcpus = DEFAULT_VCPUS
 
-    # When passing GPUs, size RAM to match total VRAM (e.g. 8x H200 = 8*141G)
     if args.pass_gpus:
         gpus = get_gpu_bdfs()
         if not gpus:
@@ -120,13 +119,18 @@ def launch_vm(args):
         setup_passthrough(qemu_cmds)
 
     print("Launching QEMU...")
-    subprocess.run(
-        ["numactl", "--interleave=all"] + qemu_cmds, stderr=subprocess.STDOUT
+    result = subprocess.run(
+        ["numactl", "--interleave=all"] + qemu_cmds,
+        stderr=subprocess.STDOUT,
     )
+    if result.returncode != 0:
+        print(f"Error: QEMU failed (exit {result.returncode}).", file=sys.stderr)
+        return result.returncode
 
     if not args.foreground:
         print(f"Log file: {LOGFILE}")
     print_vm_status(args.ssh_port)
+    return 0
 
 
 def main() -> int:
@@ -169,8 +173,7 @@ def main() -> int:
         print("Error: --image is required")
         return 1
 
-    launch_vm(args)
-    return 0
+    return launch_vm(args)
 
 
 if __name__ == "__main__":
