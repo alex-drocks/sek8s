@@ -104,6 +104,7 @@ class Ubuntu2504Profile(HostProfile):
         return [
             "qemu-system-x86",
             "libvirt-clients",
+            "libvirt-daemon-system",
             "sgx-dcap-pccs",
             "tdx-qgs",
             "libsgx-dcap-default-qpl",
@@ -145,6 +146,7 @@ class Ubuntu2510Profile(HostProfile):
         return [
             "qemu-system-x86",
             "libvirt-clients",
+            "libvirt-daemon-system",
             "sgx-dcap-pccs",
             "tdx-qgs",
             "libsgx-dcap-default-qpl",

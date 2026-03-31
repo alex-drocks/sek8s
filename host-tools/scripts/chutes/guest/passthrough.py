@@ -80,7 +80,7 @@ def _prepare_devices(
     ib_devices: list[str],
     profile: GpuProfile,
 ):
-    """Configure CC/PPCIe modes, bind to vfio-pci, virsh nodedev reattach/detach, udev rules."""
+    """Configure CC/PPCIe modes, bind to vfio-pci, virsh nodedev reattach/detach, udev."""
     total_gpus = len(gpus)
 
     _configure_nvswitches(nvswitches, profile, total_gpus)
@@ -95,6 +95,7 @@ def _prepare_devices(
     print('  Binding devices to vfio-pci (explicit BDF list)...')
     bind_explicit_devices_to_vfio(devices_to_bind)
 
+    print('  Libvirt nodedev reattach/detach (per-GPU and IB after VFIO bind)...')
     for gpu in gpus:
         virsh_bind_device(gpu)
     for ib_dev in ib_devices:

@@ -171,6 +171,16 @@ def test_2510_enables_kvm_intel_tdx():
     assert "kvm_intel.tdx=1" in profile.grub_cmdline_additions
 
 
+@pytest.mark.parametrize(
+    "profile_cls",
+    [Ubuntu2504Profile, Ubuntu2510Profile],
+)
+def test_host_profiles_include_libvirt_daemon_for_nodedev(profile_cls):
+    """libvirtd is required for reliable virsh nodedev-* during VFIO prep."""
+    profile = profile_cls()
+    assert "libvirt-daemon-system" in profile.packages
+
+
 def test_2504_does_not_set_kvm_intel_tdx():
     """25.04 gets TDX via PPA kernel -- no kvm_intel param needed."""
     profile = Ubuntu2504Profile()
