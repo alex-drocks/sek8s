@@ -1,0 +1,31 @@
+---
+# MutatingWebhookConfiguration - loaded by K3s at startup
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: admission-controller-mutator
+  namespace: kube-system
+  annotations:
+    config.hash: "{{ (mutation_webhook_config | to_json | hash('sha256'))[:16] }}"
+webhooks:
+  - name: mutate.admission.local
+    clientConfig:
+      url: https://127.0.0.1:{{ admission_port | default(8443) }}/mutate
+      caBundle: {{ admission_webhook_ca_bundle }}
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["*"]
+        apiVersions: ["*"]
+        resources:
+          - pods
+          - deployments
+          - statefulsets
+          - daemonsets
+          - jobs
+          - cronjobs
+          - replicasets
+    failurePolicy: Ignore
+    reinvocationPolicy: IfNeeded
+    admissionReviewVersions: ["v1", "v1beta1"]
+    sideEffects: None
+    timeoutSeconds: 5

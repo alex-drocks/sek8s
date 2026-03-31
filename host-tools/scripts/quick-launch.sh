@@ -17,7 +17,7 @@ run_create_config() {
 # VM base image version - must match tdx-guest.qcow2 from https://vm.chutes.ai
 # Update this when publishing a new VM; ensures QEMU args match VM version (RTMR0 consistency)
 # --------------------------------------------------------------------
-EXPECTED_BASE_SHA256="5301cc4dc385cbab8935adb2e7cdb6fcbac30b769eb370f3bb84f66a95b00556"
+EXPECTED_BASE_SHA256="9a151eb9a94113b5680100729488e166cd5b2c8f6f00caf482dd223bcde8d3df"
 
 # --------------------------------------------------------------------
 # Hard-coded defaults (lowest precedence)
@@ -163,7 +163,7 @@ while [[ $# -gt 0 ]]; do
         sleep 1
       done
 
-      ./setup-bridge.sh --clean 2>/dev/null || true
+      ./network/setup-bridge.sh --clean 2>/dev/null || true
       exit 0
       ;;
 
@@ -263,13 +263,13 @@ if [[ -n "$CONFIG_FILE" ]]; then
     exit 1
   fi
 
-  if [[ ! -d "./chutes_host" ]]; then
-    echo "Error: chutes_host package not found in current directory"
+  if [[ ! -d "./chutes" ]]; then
+    echo "Error: chutes package not found in current directory"
     exit 1
   fi
 
   set +e
-  CONFIG_OUTPUT=$(python3 -m chutes_host.config "$CONFIG_FILE" 2>&1)
+  CONFIG_OUTPUT=$(python3 -m chutes.guest.config "$CONFIG_FILE" 2>&1)
   CONFIG_EXIT_CODE=$?
   set -e
 
@@ -421,7 +421,7 @@ echo "✓ NUMA zone reclaim disabled (vm.zone_reclaim_mode=0)"
 echo "✓ Host configuration verified"
 echo ""
 
-# Device binding to vfio-pci is handled inside run-td (chutes_host.passthrough)
+# Device binding to vfio-pci is handled inside run-td (chutes.guest.passthrough)
 echo ""
 
 
@@ -520,7 +520,7 @@ echo ""
 NET_IFACE=""
 if [[ "$NETWORK_TYPE" == "tap" ]]; then
   echo "Step 5: Setting up bridge networking..."
-  BRIDGE_OUTPUT=$(./setup-bridge.sh \
+  BRIDGE_OUTPUT=$(./network/setup-bridge.sh \
     --bridge-ip "$BRIDGE_IP" \
     --vm-ip "${VM_IP}/24" \
     --vm-dns "$VM_DNS" \
