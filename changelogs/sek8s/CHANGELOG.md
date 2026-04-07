@@ -10,6 +10,11 @@ Version source of truth: `src/sek8s/VERSION`
 > **Note:** Prior to 0.2.5, the sek8s package and VM image shared a single version
 > and codebase. Entries below 0.2.5 reflect service-level changes from that era.
 
+## [0.2.6] - 2026-04-07
+
+### Changed
+- Refactored sek8s module to contain only necessary code for guest services.
+
 ## [0.2.5] - 2026-04-02
 
 ### Changed

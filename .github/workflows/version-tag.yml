@@ -148,13 +148,11 @@ jobs:
           head="${{ github.sha }}"
           changed_files=$(git diff --name-only "$base" "$head" 2>/dev/null || true)
 
-          bumped_versions=""
           check_version() {
             local file="$1" key="$2"
             if echo "$changed_files" | grep -qx "$file"; then
               echo "${key}=true" >> "$GITHUB_OUTPUT"
               echo "$file changed; will tag."
-              bumped_versions="$bumped_versions $file"
             else
               echo "${key}=false" >> "$GITHUB_OUTPUT"
             fi
@@ -164,34 +162,6 @@ jobs:
           check_version "src/sek8s/VERSION"             "sek8s"
           check_version "src/sek8s-common/VERSION"      "common"
           check_version "src/attestation-proxy/VERSION"  "proxy"
-
-          echo "bumped_versions=$bumped_versions" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Python
-        if: steps.detect.outputs.bumped_versions != ''
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Promote changelogs
-        if: steps.detect.outputs.bumped_versions != ''
-        run: |
-          python scripts/promote_changelogs.py --promote \
-            --version-files ${{ steps.detect.outputs.bumped_versions }}
-
-      - name: Commit changelog updates
-        if: steps.detect.outputs.bumped_versions != ''
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add changelogs/
-          if git diff --cached --quiet; then
-            echo "No changelog changes to commit."
-          else
-            git commit -m "chore: promote changelogs for release"
-            git push
-          fi
 
       - name: Create tags
         run: |

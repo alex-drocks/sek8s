@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Version source of truth: `src/attestation-proxy/VERSION`
 
+## [0.1.1] - 2026-04-07
+
+### Changed
+- Refactored sek8s to pull out attestaton proxy source code into standalone package to align with version management for the associated image.
+
 ## [0.1.0] - 2026-04-02
 
 ### Added
