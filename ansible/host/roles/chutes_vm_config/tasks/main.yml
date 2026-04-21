@@ -1,0 +1,119 @@
+---
+- name: Parse miner credentials from hotkey file
+  when:
+    - chutes_hotkey_path is defined
+    - chutes_hotkey_path | length > 0
+    - chutes_miner_ss58 is not defined or chutes_miner_seed is not defined
+  block:
+    - name: Read hotkey JSON from controller
+      ansible.builtin.slurp:
+        src: "{{ chutes_hotkey_path }}"
+      delegate_to: localhost
+      become: false
+      register: _hotkey_raw
+      no_log: true
+
+    - name: Extract ss58 and seed from hotkey
+      ansible.builtin.set_fact:
+        chutes_miner_ss58: "{{ (_hotkey_raw.content | b64decode | from_json).ss58Address }}"
+        chutes_miner_seed: "{{ (_hotkey_raw.content | b64decode | from_json).secretSeed | regex_replace('^0x', '') }}"
+      no_log: true
+
+- name: Validate miner credentials are present
+  ansible.builtin.assert:
+    that:
+      - chutes_miner_ss58 is defined
+      - chutes_miner_ss58 | string | length > 0
+      - chutes_miner_seed is defined
+      - chutes_miner_seed | string | length > 0
+    fail_msg: >-
+      Miner credentials are missing. Either set chutes_hotkey_path (path on the controller
+      to the Bittensor hotkey JSON) or set chutes_miner_ss58 and chutes_miner_seed explicitly
+      (host_vars / Vault).
+
+- name: Compute effective VM hostname
+  ansible.builtin.set_fact:
+    chutes_effective_vm_hostname: "{{ chutes_vm_hostname | default(inventory_hostname) }}"
+
+- name: Check if config.yaml already exists on host
+  ansible.builtin.stat:
+    path: "{{ chutes_config_remote_path }}"
+  register: _config_stat
+
+- name: Read network config from existing config.yaml
+  ansible.builtin.slurp:
+    src: "{{ chutes_config_remote_path }}"
+  register: _existing_config
+  when:
+    - _config_stat.stat.exists
+    - chutes_guest_bridge_network is not defined or (chutes_guest_bridge_network | length == 0)
+
+- name: Apply network facts from existing config.yaml
+  ansible.builtin.set_fact:
+    chutes_guest_bridge_ip: "{{ (_existing_config.content | b64decode | from_yaml).network.bridge_ip }}"
+    chutes_guest_vm_ip: "{{ (_existing_config.content | b64decode | from_yaml).network.vm_ip }}"
+    chutes_guest_public_interface: "{{ (_existing_config.content | b64decode | from_yaml).network.public_interface }}"
+  when:
+    - _config_stat.stat.exists
+    - chutes_guest_bridge_network is not defined or (chutes_guest_bridge_network | length == 0)
+
+- name: Pick guest network automatically (no overlap with host IPv4 networks)
+  when:
+    - not _config_stat.stat.exists
+    - chutes_guest_bridge_network is not defined or (chutes_guest_bridge_network | length == 0)
+  block:
+    - name: Run pick_guest_network.py on metal
+      ansible.builtin.script: pick_guest_network.py
+      register: chutes_pick_net
+      changed_when: false
+
+    - name: Apply picked network facts
+      ansible.builtin.set_fact:
+        chutes_guest_public_interface: "{{ (chutes_pick_net.stdout | trim | from_json).public_interface }}"
+        chutes_guest_vm_ip: "{{ (chutes_pick_net.stdout | trim | from_json).vm_ip }}"
+        chutes_guest_bridge_ip: "{{ (chutes_pick_net.stdout | trim | from_json).bridge_ip }}"
+
+- name: Use manual guest bridge CIDR
+  when: chutes_guest_bridge_network is defined and chutes_guest_bridge_network | length > 0
+  block:
+    - name: Derive vm/bridge from manual CIDR
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, ipaddress, sys
+            n = ipaddress.ip_network(sys.argv[1], strict=False)
+            print(json.dumps({
+              "vm_ip": str(n.network_address + 2),
+              "bridge_ip": f"{n.network_address + 1}/{n.prefixlen}",
+            }))
+          - "{{ chutes_guest_bridge_network }}"
+      register: chutes_manual_net
+      changed_when: false
+
+    - name: Apply manual network addresses
+      ansible.builtin.set_fact:
+        chutes_guest_vm_ip: "{{ (chutes_manual_net.stdout | trim | from_json).vm_ip }}"
+        chutes_guest_bridge_ip: "{{ (chutes_manual_net.stdout | trim | from_json).bridge_ip }}"
+        chutes_guest_public_interface: "{{ chutes_public_interface | default(ansible_default_ipv4.interface | default('')) }}"
+
+    - name: Require chutes_public_interface when default IPv4 fact missing
+      ansible.builtin.assert:
+        that:
+          - chutes_guest_public_interface is defined
+          - chutes_guest_public_interface | length > 0
+        fail_msg: >-
+          Set chutes_public_interface when using chutes_guest_bridge_network and this host has no ansible_default_ipv4.interface.
+
+- name: Prefer explicit chutes_public_interface over detected
+  when: chutes_public_interface is defined and chutes_public_interface | length > 0
+  ansible.builtin.set_fact:
+    chutes_guest_public_interface: "{{ chutes_public_interface }}"
+
+- name: Render config.yaml on host
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ chutes_config_remote_path }}"
+    mode: "0600"
+  no_log: true

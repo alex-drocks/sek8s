@@ -1,0 +1,38 @@
+---
+- name: Ensure sek8s remote root exists
+  ansible.builtin.file:
+    path: "{{ sek8s_remote_root }}"
+    state: directory
+    mode: "0755"
+
+- name: Initialize sparse shallow checkout of host-tools
+  ansible.builtin.shell: |
+    set -euo pipefail
+    git init
+    git remote add origin {{ sek8s_repo_url }} 2>/dev/null \
+      || git remote set-url origin {{ sek8s_repo_url }}
+    git config core.sparseCheckout true
+    mkdir -p .git/info
+    printf 'host-tools/\nfirmware/\n' > .git/info/sparse-checkout
+    git fetch --depth 1 origin {{ sek8s_repo_branch | default('main') }}
+    git checkout {{ sek8s_repo_branch | default('main') }} 2>/dev/null \
+      || git checkout -b {{ sek8s_repo_branch | default('main') }} FETCH_HEAD
+  args:
+    chdir: "{{ sek8s_remote_root }}"
+    executable: /bin/bash
+    creates: "{{ sek8s_remote_host_tools }}"
+
+- name: Ensure sparse-checkout includes host-tools and firmware
+  ansible.builtin.copy:
+    dest: "{{ sek8s_remote_root }}/.git/info/sparse-checkout"
+    content: |
+      host-tools/
+      firmware/
+    mode: "0644"
+
+- name: Pull latest host-tools
+  ansible.builtin.command:
+    cmd: git pull --depth 1
+    chdir: "{{ sek8s_remote_root }}"
+  register: git_pull
+  changed_when: "'Already up to date' not in git_pull.stdout"

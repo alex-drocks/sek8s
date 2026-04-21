@@ -6,7 +6,9 @@
 **/image/*.qcow2
 **/*.log
 .idea
+.vscode/
 /bin/
+.continue/
 
 tests/integration/keys
 tests/integration/test-data
