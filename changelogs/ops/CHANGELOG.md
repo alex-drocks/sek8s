@@ -11,6 +11,7 @@ Date-stamped entries, not paired with any VERSION file. Run `make promote-change
 
 ### Changed
 - Added python3 venv deps to host
+- Update host tools to handle divergent branches
 
 ### Fixed
 - Fixed handlign of stale venv if previous ansible run had an issue in host setup playbooks.
