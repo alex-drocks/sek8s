@@ -271,6 +271,67 @@ def _grub_update_cmdline(additions: list[str]):
         _run(["sudo", "grub-install", "--no-nvram"])
 
 
+def _configure_qcnl(conf_path: str = "/etc/sgx_default_qcnl.conf"):
+    """Ensure QCNL accepts PCCS's self-signed TLS certificate.
+
+    PCCS runs locally with a self-signed cert.  The default QCNL config ships
+    with use_secure_cert=true which causes CURL error 60 on every quote
+    request.  We patch it to false so QGS can reach the local PCCS.
+
+    The file is a JSON5-ish format (allows comments and trailing commas) so
+    we use a regex patch rather than json.loads to avoid stripping comments.
+    """
+    import re as _re
+
+    if not os.path.exists(conf_path):
+        print(f"  {conf_path} not found — QCNL not installed yet, skipping")
+        return
+
+    with open(conf_path) as f:
+        original = f.read()
+
+    updated = _re.sub(
+        r'"use_secure_cert"\s*:\s*true',
+        '"use_secure_cert": false',
+        original,
+    )
+
+    if updated == original:
+        print(f"  {conf_path} already has use_secure_cert=false")
+        return
+
+    print(f"  Patching {conf_path}: use_secure_cert → false")
+    _write_system_file(conf_path, updated)
+
+
+def _configure_qgs_vsock(conf_path: str = "/etc/qgs.conf"):
+    """Ensure QGS uses vsock (port 4050) rather than a Unix domain socket.
+
+    The default shipped config has the port line commented out, which causes
+    QGS to bind a Unix socket that the VM cannot reach.  We uncomment/set
+    'port = 4050' so QGS listens on vsock and restarts the service if the
+    file was changed.
+    """
+    import re as _re
+
+    if not os.path.exists(conf_path):
+        print(f"  {conf_path} not found — QGS not installed yet, skipping")
+        return
+
+    with open(conf_path) as f:
+        original = f.read()
+
+    updated = _re.sub(r"^#?\s*port\s*=.*$", "port = 4050", original, flags=_re.MULTILINE)
+
+    if updated == original:
+        print(f"  {conf_path} already set to vsock port 4050")
+        return
+
+    print(f"  Configuring {conf_path}: enabling vsock port 4050")
+    _write_system_file(conf_path, updated)
+    _run(["sudo", "systemctl", "restart", "qgsd"])
+
+
 def _add_user_to_kvm():
     """Add the invoking (non-root) user to the kvm group."""
     user = os.environ.get("SUDO_USER") or os.environ.get("USER")
@@ -290,8 +351,10 @@ def setup_host(profile: HostProfile):
     3. Install kernel + packages
     4. Set kernel as default boot target
     5. Update GRUB cmdline
-    6. Add user to kvm group
-    7. Install dependencies (CLI symlinks + nvidia-gpu-tools)
+    6. Configure QGS for vsock (port 4050)
+    7. Configure QCNL to accept local PCCS self-signed cert
+    8. Add user to kvm group
+    9. Install dependencies (CLI symlinks + nvidia-gpu-tools)
     """
     print(f"\n{'=' * 60}")
     print(f"  TDX Host Setup: {profile.describe()}")
@@ -345,12 +408,20 @@ def setup_host(profile: HostProfile):
     print("\nStep 5: Updating GRUB cmdline...")
     _grub_update_cmdline(profile.grub_cmdline_additions)
 
-    # 6. kvm group
-    print("\nStep 6: Configuring kvm group...")
+    # 6. QGS vsock mode
+    print("\nStep 6: Configuring QGS for vsock (port 4050)...")
+    _configure_qgs_vsock()
+
+    # 7. QCNL self-signed cert
+    print("\nStep 7: Configuring QCNL to accept local PCCS self-signed cert...")
+    _configure_qcnl()
+
+    # 8. kvm group
+    print("\nStep 8: Configuring kvm group...")
     _add_user_to_kvm()
 
-    # 7. Host dependencies (repo CLIs + nvidia-gpu-tools)
-    print("\nStep 7: Installing dependencies...")
+    # 9. Host dependencies (repo CLIs + nvidia-gpu-tools)
+    print("\nStep 9: Installing dependencies...")
     install_dependencies()
 
     print(f"\n{'=' * 60}")
