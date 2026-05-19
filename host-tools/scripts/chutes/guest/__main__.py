@@ -36,14 +36,14 @@ def _firmware_path() -> str:
     return os.path.join(scripts_dir, _FIRMWARE_REL)
 
 
-def print_vm_status(ssh_port: int):
+def print_vm_status(ssh_port: int, show_ssh: bool = False):
     try:
         with open(PIDFILE) as pid_file:
             pid = int(pid_file.read())
             print(f"TDX VM running with PID: {pid}")
-            print(f"Login:")
-            print(f"   ssh -p {ssh_port} tdx@localhost   (default: tdx/123456)")
-            print(f"   ssh -p {ssh_port} root@localhost  (password: 123456)")
+            if show_ssh:
+                print(f"Login:")
+                print(f"   ssh -p {ssh_port} root@<host-ip>")
     except Exception:
         pass
 
@@ -63,6 +63,7 @@ def stop_existing_vm():
 def launch_vm(args) -> int:
     mem = DEFAULT_MEM
     vcpus = DEFAULT_VCPUS
+    smp_topology = f"{DEFAULT_VCPUS},sockets=1,cores={DEFAULT_VCPUS},threads=1"
 
     if args.pass_gpus:
         gpus = get_gpu_bdfs()
@@ -74,6 +75,7 @@ def launch_vm(args) -> int:
             total_gpus = len(gpus)
             mem = f"{total_gpus * profile.vram_gb}G"
             vcpus = str(profile.vcpus)
+            smp_topology = profile.smp_topology
             print(
                 f"  GPU passthrough: {total_gpus}x {profile.name}"
                 f" ({profile.vram_gb}GB VRAM each)"
@@ -88,7 +90,7 @@ def launch_vm(args) -> int:
 
     qemu_cmds = build_base_cmd(
         mem=mem,
-        vcpus=vcpus,
+        smp_topology=smp_topology,
         process_name=PROCESS_NAME,
         cpu_args=cpu_args,
         firmware=_firmware_path(),
@@ -129,7 +131,7 @@ def launch_vm(args) -> int:
 
     if not args.foreground:
         print(f"Log file: {LOGFILE}")
-    print_vm_status(args.ssh_port)
+    print_vm_status(args.ssh_port, show_ssh=args.ssh)
     return 0
 
 
@@ -140,6 +142,7 @@ def main() -> int:
     parser.add_argument("--pass-gpus", action="store_true")
     parser.add_argument("--foreground", action="store_true")
     parser.add_argument("--clean", action="store_true")
+    parser.add_argument("--ssh", action="store_true", help="Show SSH login hint after launch (benchmark and debug modes)")
 
     parser.add_argument("--config-volume", type=str)
     parser.add_argument("--cache-volume", type=str)

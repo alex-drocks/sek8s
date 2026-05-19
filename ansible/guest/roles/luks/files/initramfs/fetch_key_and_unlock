@@ -16,13 +16,15 @@ log_msg() {
 [ -f /etc/tdx-luks.conf ] && . /etc/tdx-luks.conf
 
 # Validate required configuration
-if [ -z "$TDX_API_ENDPOINT" ] || [ -z "$TDX_NONCE_ENDPOINT" ]; then
+if [ -z "$TDX_BASE_URL" ] || [ -z "$VALIDATOR_BASE_URL" ]; then
     echo "ERROR: Missing required TDX configuration. Check /etc/tdx-luks.conf" >&2
     exit 1
 fi
 
-API_ENDPOINT="$TDX_API_ENDPOINT"
-NONCE_ENDPOINT="$TDX_NONCE_ENDPOINT"
+# Endpoints are derived from the two base URLs; paths are stable and not configurable.
+# TDX_BASE_URL is the mTLS proxy; VALIDATOR_BASE_URL is the regular TLS API.
+API_ENDPOINT="${TDX_BASE_URL}/servers/boot/attestation"
+NONCE_ENDPOINT="${VALIDATOR_BASE_URL}/servers/nonce"
 DEVICE_PATH="${LUKS_DEVICE:-/dev/vda1}"
 LUKS_NAME="${LUKS_NAME:-encrypted_root}"
 TIMEOUT="${TDX_TIMEOUT:-30}"
@@ -33,7 +35,7 @@ API_CA_CERT="/etc/ssl/certs/ca-certificates.crt"
 
 # Global variables
 LUKS_KEY=""
-BOOT_TOKEN=""
+LUKS_QUOTE_NONCE=""  # single-use nonce for the init-bottom POST /luks quote
 VM_NAME=""
 HOTKEY=""
 SUCCESS_FLAG=0
@@ -48,14 +50,13 @@ clear_luks_key() {
         unset LUKS_KEY
     fi
     
-    if [ -n "$BOOT_TOKEN" ]; then
-        BOOT_TOKEN="$(head -c 1000 /dev/urandom 2>/dev/null | base64 | tr -d '\n' | head -c 1000)"
-        BOOT_TOKEN=""
-        unset BOOT_TOKEN
+    # Clear any temporary files that might contain sensitive data.
+    # On success the cert must survive until setup_storage (init-bottom) completes
+    # its /luks/attest call; setup_storage is responsible for deleting them.
+    if [ "$SUCCESS_FLAG" -ne 1 ]; then
+        rm -f "$CLIENT_CERT" "$CLIENT_KEY"
     fi
-    
-    # Clear any temporary files that might contain sensitive data
-    rm -f "$CLIENT_CERT" "$CLIENT_KEY" /tmp/api_response /tmp/nonce_response
+    rm -f /tmp/api_response /tmp/nonce_response
     
     # If script exits without success flag, shutdown the VM
     if [ "$SUCCESS_FLAG" -ne 1 ]; then
@@ -71,7 +72,7 @@ trap clear_luks_key EXIT INT TERM
 
 echo ""
 log_msg "Starting TDX-based disk unlock"
-log_msg "Endpoints: nonce=${NONCE_ENDPOINT}, attest=${API_ENDPOINT}"
+log_msg "TDX base: ${TDX_BASE_URL}, validator base: ${VALIDATOR_BASE_URL}"
 
 # Function to generate self-signed client certificate
 generate_client_cert() {
@@ -323,23 +324,23 @@ generate_quote() {
     return 0
 }
 
-# Function to fetch LUKS key from API with fresh nonce for each attempt
+# Function to fetch LUKS key from API with fresh nonce for each attempt.
+# Sets FETCH_ATTEMPTS to the number of attempts actually made.
 fetch_luks_key() {
-    local attempt=1
+    FETCH_ATTEMPTS=0
     local response_file="/tmp/api_response"
     
-    while [ $attempt -le $RETRY_COUNT ]; do
-        log_msg "LUKS key fetch attempt $attempt/$RETRY_COUNT"
+    while [ $FETCH_ATTEMPTS -lt $RETRY_COUNT ]; do
+        FETCH_ATTEMPTS=$((FETCH_ATTEMPTS + 1))
+        log_msg "LUKS key fetch attempt $FETCH_ATTEMPTS/$RETRY_COUNT"
         
         if ! fetch_nonce; then
-            attempt=$((attempt + 1))
-            [ $attempt -le $RETRY_COUNT ] && sleep 2
+            [ $FETCH_ATTEMPTS -lt $RETRY_COUNT ] && sleep 2
             continue
         fi
         
         if ! generate_quote; then
-            attempt=$((attempt + 1))
-            [ $attempt -le $RETRY_COUNT ] && sleep 2
+            [ $FETCH_ATTEMPTS -lt $RETRY_COUNT ] && sleep 2
             continue
         fi
         
@@ -364,12 +365,12 @@ fetch_luks_key() {
         case "$http_code" in
             200)
                 LUKS_KEY=$(jq -r '.key // empty' "$response_file" 2>/dev/null)
-                BOOT_TOKEN=$(jq -r '.boot_token // empty' "$response_file" 2>/dev/null)
-                if [ -n "$LUKS_KEY" ]; then
+                LUKS_QUOTE_NONCE=$(jq -r '.luks_quote_nonce // empty' "$response_file" 2>/dev/null)
+                if [ -n "$LUKS_KEY" ] && [ -n "$LUKS_QUOTE_NONCE" ]; then
                     rm -f "$response_file"
                     send_result=0
                 else
-                    send_error="API response missing key field"
+                    send_error="API response missing key or luks_quote_nonce field"
                 fi
                 ;;
             401|403) send_error="Authentication failed (HTTP $http_code)" ;;
@@ -387,11 +388,10 @@ fetch_luks_key() {
         
         case "$http_code" in
             401|403|404) rm -f "$response_file"; return 1 ;;
-            429) sleep $((attempt * 2)) ;;
+            429) sleep $((FETCH_ATTEMPTS * 2)) ;;
         esac
         
-        attempt=$((attempt + 1))
-        [ $attempt -le $RETRY_COUNT ] && sleep 2
+        [ $FETCH_ATTEMPTS -lt $RETRY_COUNT ] && sleep 2
     done
     
     rm -f "$response_file"
@@ -478,7 +478,7 @@ main() {
     
     # Fetch LUKS key from API (nonce and quote generated per attempt)
     if ! fetch_luks_key; then
-        handle_failure "Failed to retrieve LUKS key from API after $RETRY_COUNT attempts"
+        handle_failure "Failed to retrieve LUKS key from API after $FETCH_ATTEMPTS attempt(s)"
         return 1
     fi
     
@@ -490,15 +490,22 @@ main() {
     
     # Unlock the device
     if unlock_device; then
-        # Save vm_name, hotkey, and boot token to /run for storage setup
+        # Save vm_name, hotkey, boot token, and luks quote nonce to /run for storage setup.
+        # luks-quote-nonce is the REPORTDATA nonce for the init-bottom POST /luks quote.
         mkdir -m 700 -p /run/chutes
         echo "$VM_NAME" > /run/chutes/vm-name
         echo "$HOTKEY" > /run/chutes/hotkey
-        if [ -n "$BOOT_TOKEN" ]; then
-            echo "$BOOT_TOKEN" > /run/chutes/boot-token
-            chmod 600 /run/chutes/boot-token
+        if [ -n "$LUKS_QUOTE_NONCE" ]; then
+            printf '%s' "$LUKS_QUOTE_NONCE" > /run/chutes/luks-quote-nonce
+            chmod 600 /run/chutes/luks-quote-nonce
         fi
-        
+        # Save cert hash so setup_storage can bind it into the luks/attest REPORTDATA.
+        # The cert files themselves stay in /tmp/ (cleared by setup_storage after use).
+        if [ -n "$CERT_HASH" ]; then
+            printf '%s' "$CERT_HASH" > /run/chutes/cert-hash
+            chmod 600 /run/chutes/cert-hash
+        fi
+
         # Mark as successful before cleanup
         SUCCESS_FLAG=1
         

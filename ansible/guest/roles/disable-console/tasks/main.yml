@@ -1,0 +1,110 @@
+---
+# disable-console — Mask all interactive console and legacy remote access.
+#
+# Disables getty/serial console services and removes legacy network access
+# daemons (telnet, rsh, etc.) so the VM has no interactive login surface
+# other than SSH.  Applies to all build types including benchmark.
+#
+# Idempotent: safe to re-run. No flags or conditionals — the playbook
+# decides whether to include this role.
+
+- name: Disable and mask console access services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+    masked: true
+  loop:
+    - getty@tty1
+    - getty@tty2
+    - getty@tty3
+    - getty@tty4
+    - getty@tty5
+    - getty@tty6
+    - serial-getty@ttyS0
+    - serial-getty@hvc0
+    - console-getty
+    # Mask the autovt@ template and getty.target so systemd cannot spawn
+    # new gettys on-demand for VTs beyond tty6 (e.g. tty7+).
+    # Masking instances alone leaves the template available for dynamic activation.
+    - autovt@
+    - getty.target
+  failed_when: false
+
+# Mask systemd emergency/rescue/debug targets.  CrashShell=no prevents the
+# crash shell, but emergency.target and rescue.target can still be activated
+# via kernel cmdline (systemd.unit=emergency.target) or early boot failures.
+# With root locked to nologin these are not directly exploitable, but masking
+# removes the surface entirely.
+- name: Mask systemd emergency, rescue, and debug-shell targets
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    masked: true
+  loop:
+    - emergency.service
+    - emergency.target
+    - rescue.service
+    - rescue.target
+    - debug-shell.service
+  failed_when: false
+
+- name: Disable and mask legacy remote access services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+    masked: true
+  loop:
+    - telnet
+    - rsh
+    - rlogin
+    - vsftpd
+    - ftpd
+    - xinetd
+    - inetd
+  failed_when: false
+
+- name: Remove legacy remote access and unnecessary packages
+  ansible.builtin.package:
+    name:
+      - telnet-server
+      - rsh-server
+      - vsftpd
+      - proftpd
+      - xinetd
+      - inetd
+      - nis
+      - rpcbind
+      # x11-common has no purpose on a headless VM and pulls in X11 font/utility paths
+      - x11-common
+      - libx11-data
+    state: absent
+  failed_when: false
+
+- name: Disable kernel console access via GRUB cmdline
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^GRUB_CMDLINE_LINUX='
+    line: 'GRUB_CMDLINE_LINUX="console=ttyS0,115200n8 systemd.mask=getty@tty1.service systemd.mask=serial-getty@ttyS0.service systemd.mask=serial-getty@hvc0.service systemd.mask=emergency.service systemd.mask=rescue.service"'
+    backup: true
+  notify: update grub
+
+# Set GRUB_DEFAULT=0 and disable GRUB_SAVEDEFAULT so every boot uses the
+# first (latest) kernel entry unconditionally.  Without this, grubenv may
+# have no saved_entry on first boot, causing GRUB to fall back to a recovery
+# or older kernel entry and producing different RTMR1/RTMR2 values.
+- name: Set GRUB default to entry 0 (latest kernel)
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^#?GRUB_DEFAULT='
+    line: 'GRUB_DEFAULT=0'
+  notify: update grub
+
+- name: Disable GRUB savedefault
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^#?GRUB_SAVEDEFAULT='
+    line: 'GRUB_SAVEDEFAULT=false'
+  notify: update grub
+

@@ -305,6 +305,7 @@ chutes_agent_sa_token_exempt if {
 
 chutes_agent_sa_token_exempt if {
 	input.request.kind.kind in ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]
+	helpers.is_system_or_controller_user
 	input.request.object.spec.template.metadata.labels["app.kubernetes.io/name"] == "agent"
 	has_agent_image(input.request.object.spec.template.spec)
 }
@@ -348,6 +349,119 @@ deny contains msg if {
 }
 
 # =============================================================================
+# CHUTES NAMESPACE: IMAGE REGISTRY ALLOWLIST
+# =============================================================================
+# Only images from the validator registry (cosign-verified chute images) or the
+# parachutes Docker Hub org (agent, cache-cleaner, etc.) are permitted. This is
+# defense-in-depth on top of containerd cosign signature verification.
+
+chutes_is_allowed_image(container) if {
+	startswith(lower(container.image), concat("", [lower(data.config.validator_registry), "/"]))
+}
+
+chutes_is_allowed_image(container) if {
+	startswith(lower(container.image), "parachutes/")
+}
+
+# Pod containers
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind == "Pod"
+	helpers.is_pod_resource
+	not helpers.is_system_or_controller_user
+	container := input.request.object.spec.containers[_]
+	not chutes_is_allowed_image(container)
+	msg := sprintf("Chutes namespace: container '%s' image '%s' is not from an allowed registry (validator registry or parachutes/)", [container.name, container.image])
+}
+
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind == "Pod"
+	helpers.is_pod_resource
+	not helpers.is_system_or_controller_user
+	container := input.request.object.spec.initContainers[_]
+	not chutes_is_allowed_image(container)
+	msg := sprintf("Chutes namespace: init container '%s' image '%s' is not from an allowed registry", [container.name, container.image])
+}
+
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind == "Pod"
+	helpers.is_pod_resource
+	not helpers.is_system_or_controller_user
+	container := input.request.object.spec.ephemeralContainers[_]
+	not chutes_is_allowed_image(container)
+	msg := sprintf("Chutes namespace: ephemeral container '%s' image '%s' is not from an allowed registry", [container.name, container.image])
+}
+
+# Workload controllers (Deployment, StatefulSet, DaemonSet, ReplicaSet, Job)
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind in ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"]
+	helpers.is_pod_resource
+	not helpers.is_system_or_controller_user
+	container := input.request.object.spec.template.spec.containers[_]
+	not chutes_is_allowed_image(container)
+	msg := sprintf("Chutes namespace: container '%s' image '%s' is not from an allowed registry (validator registry or parachutes/)", [container.name, container.image])
+}
+
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind in ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"]
+	helpers.is_pod_resource
+	not helpers.is_system_or_controller_user
+	container := input.request.object.spec.template.spec.initContainers[_]
+	not chutes_is_allowed_image(container)
+	msg := sprintf("Chutes namespace: init container '%s' image '%s' is not from an allowed registry", [container.name, container.image])
+}
+
+# CronJob
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind == "CronJob"
+	helpers.is_pod_resource
+	not helpers.is_system_or_controller_user
+	container := input.request.object.spec.jobTemplate.spec.template.spec.containers[_]
+	not chutes_is_allowed_image(container)
+	msg := sprintf("Chutes namespace: container '%s' image '%s' is not from an allowed registry (validator registry or parachutes/)", [container.name, container.image])
+}
+
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind == "CronJob"
+	helpers.is_pod_resource
+	not helpers.is_system_or_controller_user
+	container := input.request.object.spec.jobTemplate.spec.template.spec.initContainers[_]
+	not chutes_is_allowed_image(container)
+	msg := sprintf("Chutes namespace: init container '%s' image '%s' is not from an allowed registry", [container.name, container.image])
+}
+
+# =============================================================================
+# CHUTES NAMESPACE: NO EPHEMERAL CONTAINERS
+# =============================================================================
+# Ephemeral containers are the only mutable part of a Pod spec (added via
+# UPDATE/PATCH). They bypass all CREATE-only Pod rules and provide an
+# interactive debugging shell inside a running pod. No legitimate use case
+# exists in production — debugging is via the system manager API only.
+# This rule fires on both CREATE and UPDATE to block kubectl debug entirely.
+
+deny contains msg if {
+	input.request.operation in ["CREATE", "UPDATE"]
+	input.request.namespace == "chutes"
+	input.request.kind.kind == "Pod"
+	helpers.is_pod_resource
+	input.request.object.spec.ephemeralContainers
+	msg := "Chutes namespace: ephemeral containers are not permitted (no kubectl debug in production)"
+}
+
+# =============================================================================
 # CHUTES NAMESPACE: NO envFrom
 # =============================================================================
 # envFrom bulk-injects all keys from a ConfigMap/Secret as env vars, bypassing
@@ -377,11 +491,31 @@ deny contains msg if {
 deny contains msg if {
 	chutes_apply_pod_spec_rules
 	input.request.namespace == "chutes"
+	input.request.kind.kind == "Pod"
+	helpers.is_pod_resource
+	container := input.request.object.spec.ephemeralContainers[_]
+	container.envFrom
+	msg := sprintf("Chutes namespace: ephemeral container '%s' must not use envFrom", [container.name])
+}
+
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
 	input.request.kind.kind in ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]
 	helpers.is_pod_resource
 	container := input.request.object.spec.template.spec.containers[_]
 	container.envFrom
 	msg := sprintf("Chutes namespace: container '%s' must not use envFrom (use explicit env[] entries)", [container.name])
+}
+
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind in ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]
+	helpers.is_pod_resource
+	container := input.request.object.spec.template.spec.initContainers[_]
+	container.envFrom
+	msg := sprintf("Chutes namespace: init container '%s' must not use envFrom", [container.name])
 }
 
 deny contains msg if {
@@ -412,6 +546,16 @@ deny contains msg if {
 	container := input.request.object.spec.jobTemplate.spec.template.spec.containers[_]
 	container.envFrom
 	msg := sprintf("Chutes namespace: container '%s' must not use envFrom (use explicit env[] entries)", [container.name])
+}
+
+deny contains msg if {
+	chutes_apply_pod_spec_rules
+	input.request.namespace == "chutes"
+	input.request.kind.kind == "CronJob"
+	helpers.is_pod_resource
+	container := input.request.object.spec.jobTemplate.spec.template.spec.initContainers[_]
+	container.envFrom
+	msg := sprintf("Chutes namespace: init container '%s' must not use envFrom", [container.name])
 }
 
 # =============================================================================
@@ -533,7 +677,7 @@ deny contains msg if {
 deny contains msg if {
 	chutes_apply_pod_spec_rules
 	input.request.namespace == "chutes"
-	input.request.kind.kind in ["Deployment", "StatefulSet", "ReplicaSet"]
+	input.request.kind.kind in ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]
 	helpers.is_pod_resource
 	volume := input.request.object.spec.template.spec.volumes[_]
 	not chutes_is_allowed_volume_type(volume)

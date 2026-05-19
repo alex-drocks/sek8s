@@ -15,13 +15,14 @@ all:
     # Helm chart signing PGP public key (required)
     helm_chart_public_key_path: "~/.chutes/helm-pubkey.gpg"
     luks_passphrase: "{{ lookup('env', 'LUKS_PASSPHRASE') | mandatory }}"
-    tdx_api_endpoint: "https://api.example.com/servers/boot/attestation"
-    tdx_nonce_endpoint: "https://api.example.com/servers/nonce"
-    tdx_luks_endpoint: "https://api.example.com/servers/vm_name/luks"
+    tdx_base_url: "https://tdx-attestation.example.com:8443"
+    validator_base_url: "https://api.chutes.ai"
     build_env: "prod"
     prime_wait_timeout: 300
-    gpu_verify_debug_mode: false
+
     debug_build: false
+    # List of SSH public key strings for guest access (required when using tee-gpu-vm.yml)
+    guest_ssh_keys: []
     validator: "5Dt7HZ7Zpw4DppPxFM7Ke3Cm7sDAWhsZXmM5ZAmE7dSVJbcQ"
     # Optional: Override sek8s image tag for testing (default: "latest")
     # sek8s_image_tag: "dev-latest"

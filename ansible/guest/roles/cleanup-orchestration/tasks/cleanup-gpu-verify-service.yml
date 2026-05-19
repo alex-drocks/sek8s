@@ -1,0 +1,7 @@
+---
+- name: Enable gpu-verify service
+  systemd:
+    name: gpu-verify.service
+    enabled: yes
+    state: stopped
+  tags: service

@@ -24,10 +24,11 @@ deny contains msg if {
 }
 
 deny contains msg if {
-    input.request.operation == "CREATE"
+    input.request.operation in ["CREATE", "UPDATE"]
     helpers.is_pod_resource
     not helpers.is_system_or_controller_user
-    
+    not helpers.is_rollout_restart
+
     # Check Deployment/StatefulSet/DaemonSet templates
     input.request.kind.kind in ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]
     volume := input.request.object.spec.template.spec.volumes[_]
@@ -37,10 +38,11 @@ deny contains msg if {
 }
 
 deny contains msg if {
-    input.request.operation == "CREATE"
+    input.request.operation in ["CREATE", "UPDATE"]
     helpers.is_pod_resource
     not helpers.is_system_or_controller_user
-    
+    not helpers.is_rollout_restart
+
     # Check Job templates
     input.request.kind.kind == "Job"
     volume := input.request.object.spec.template.spec.volumes[_]
@@ -50,10 +52,11 @@ deny contains msg if {
 }
 
 deny contains msg if {
-    input.request.operation == "CREATE"
+    input.request.operation in ["CREATE", "UPDATE"]
     helpers.is_pod_resource
     not helpers.is_system_or_controller_user
-    
+    not helpers.is_rollout_restart
+
     # Check CronJob templates
     input.request.kind.kind == "CronJob"
     volume := input.request.object.spec.jobTemplate.spec.template.spec.volumes[_]
@@ -66,24 +69,39 @@ deny contains msg if {
 # HOSTPATH ALLOWLIST HELPERS
 # =============================================================================
 
+# Reject any path containing traversal sequences. Kubelet normalizes paths
+# before the admission request reaches OPA, so this should never fire in
+# practice — it's defense-in-depth against hypothetical bypass.
+is_path_traversal(path) if { contains(path, "..") }
+
 # Cache path: /var/snap/cache exactly or /var/snap/cache/... (not /var/snap/cache-evil)
-is_cache_hostpath(path) if { path == "/var/snap/cache" }
-is_cache_hostpath(path) if { startswith(path, "/var/snap/cache/") }
+is_cache_hostpath(path) if {
+    not is_path_traversal(path)
+    path == "/var/snap/cache"
+}
+is_cache_hostpath(path) if {
+    not is_path_traversal(path)
+    startswith(path, "/var/snap/cache/")
+}
 
 # Image from the validator registry (cosign-verified chute images).
 # data.config.validator_registry is set at deploy time via config.json
 # (e.g. "myvalidator.localregistry.chutes.ai:30500").
 # lower() is required because k8s/containerd normalise registry hostnames
 # to lowercase while the Ansible config may carry a mixed-case SS58 address.
+# Require a "/" delimiter after the registry to prevent prefix collisions
+# (e.g. "evil.localregistry.chutes.ai.evil.com/...").
 has_validator_registry_image(pod_spec) if {
     container := pod_spec.containers[_]
-    startswith(lower(container.image), lower(data.config.validator_registry))
+    startswith(lower(container.image), concat("", [lower(data.config.validator_registry), "/"]))
 }
 
-# Image from parachutes/chutes-agent (cosign-verified via parachutes org key)
+# Image from parachutes/chutes-agent (cosign-verified via parachutes org key).
+# Require [:@] delimiter after the image name to prevent prefix collisions
+# (e.g. "parachutes/chutes-agent-evil" must not match).
 has_agent_image(pod_spec) if {
     container := pod_spec.containers[_]
-    startswith(lower(container.image), "parachutes/chutes-agent")
+    regex.match("^parachutes/chutes-agent[:@]", lower(container.image))
 }
 
 # =============================================================================

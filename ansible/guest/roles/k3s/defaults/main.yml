@@ -1,4 +1,5 @@
 ---
+helm_version: v3.20.2 # noqa var-naming[no-role-prefix]
 k3s_version: v1.35.4+k3s1
 k3s_server_location: /var/lib/rancher/k3s
 # Helm paths for cluster-init (must match setup_chutes.yml).
@@ -12,6 +13,7 @@ user_kubectl: true # noqa var-naming[no-role-prefix]
 k3s_extra_server_args: ""
 k3s_server_config_yaml: |-
   write-kubeconfig-mode: "0600"
+  encryption-provider-config: /run/chutes/k3s-encryption-config.yaml
   disable:
     - traefik
     - servicelb
