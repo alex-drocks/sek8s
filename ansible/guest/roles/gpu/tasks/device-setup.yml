@@ -168,6 +168,7 @@
               - nvidia-kernel-source-open={{ nvidia_pkg_version }}
               - nvidia-kernel-common={{ nvidia_pkg_version }}
               - nvidia-firmware={{ nvidia_pkg_version }}
+              - nvidia-modprobe={{ nvidia_pkg_version }}
             install_recommends: false
             state: present
           environment:
