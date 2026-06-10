@@ -153,6 +153,8 @@
               - libnvidia-extra={{ nvidia_pkg_version }}
               - libnvidia-fbc1={{ nvidia_pkg_version }}
               - libnvidia-gl={{ nvidia_pkg_version }}
+              - libnvidia-gpucomp={{ nvidia_pkg_version }}
+              - nvidia-persistenced={{ nvidia_pkg_version }}
             install_recommends: false
             state: present
           environment:
