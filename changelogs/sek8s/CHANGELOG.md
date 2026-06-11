@@ -10,6 +10,15 @@ Version source of truth: `src/sek8s/VERSION`
 > **Note:** Prior to 0.2.5, the sek8s package and VM image shared a single version
 > and codebase. Entries below 0.2.5 reflect service-level changes from that era.
 
+## [0.3.1] - 2026-06-11
+
+### Added
+- Retry logic in `download.py` for transient 403 errors caused by presigned CDN URL expiration on large model downloads (up to 5 retries with exponential backoff)
+
+### Changed
+- Upgraded `huggingface_hub` from 0.36.2 to ^1.18.0; removed deprecated `hf-transfer` dependency
+- System manager downloads now use throttled XET (`HF_XET_FIXED_DOWNLOAD_CONCURRENCY=16`, `TOKIO_WORKER_THREADS=8`) instead of disabled XET with httpx fallback — benchmarked at ~500 MB/s vs ~22 MB/s in TDX
+
 ## [0.3.0] - 2026-05-15
 
 ### Added
