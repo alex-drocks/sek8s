@@ -9,6 +9,10 @@ Version source of truth: `ansible/guest/VERSION`
 
 ## [1.3.1] - 2026-06-11
 
+### Added
+- `libnvidia-gpucomp` and `nvidia-persistenced` packages to guest NVIDIA driver install (required by B300 driver stack).
+- `nvidia-modprobe` package to DKMS kernel module install (fixes module load on boot).
+
 ### Changed
 - System manager env: replaced `HF_HUB_DISABLE_XET=1` + `HF_HUB_ENABLE_HF_TRANSFER=1` with throttled XET tuning (`HF_XET_FIXED_DOWNLOAD_CONCURRENCY=16`, `TOKIO_WORKER_THREADS=8`)
 - OPA admission policy: added `HF_XET_FIXED_DOWNLOAD_CONCURRENCY` and `TOKIO_WORKER_THREADS` to allowed pod env vars
