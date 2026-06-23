@@ -3,6 +3,34 @@
 Operational tooling changes: `ansible/host/`, `host-tools/`, `.github/workflows/`.
 Versioned with CalVer `YYYY.MM.PATCH` via `changelogs/ops/VERSION`. Run `make promote-changelogs` to aggregate fragments into the current version section.
 
+## [2026.06.0] - 2026-06-19
+
+### Added
+- B300 Blackwell HGX GPU support for TDX VM launch (`B300Profile`: PCI device ID `3182`, 288 GiB HBM3e VRAM, 2-socket/192-vCPU topology).
+- Per-profile TDVF firmware selection (`firmware_filename` property).
+- `use_ovmf_mmio_fw_cfg` profile property — B300 disables per-GPU fw_cfg MMIO hints in favour of OVMF auto-sized multi-TB MMIO window.
+- `get_sbr_reset_args()` profile method for Secondary Bus Reset recovery after CC-mode switch.
+- PCI wedge detection (`pci_operations_wedged()`, `wait_pci_operations_idle()`) — pre-flight and post-unbind checks abort with a clear message instead of hanging when the PCI subsystem is stuck in D-state.
+- Standalone host CPU tuning tool (`python -m chutes.host.tune apply|restore`, exposed as the `chutes-tune-host` / `chutes-restore-host` commands via the existing `setup-tdx-host` tool-symlink step), decoupled from VM launch — applied and reverted deliberately by the operator rather than automatically on every start/stop. Implements the NVIDIA Confidential Computing Deployment Guide (DU-12302-001) host-OS recommendation: CPU frequency governor → `performance` and C-states **C1E/C6** disabled, leaving the shallow `POLL`/`C1` states enabled for thermal headroom (it no longer disables every C-state, nor forces turbo/EPP). Pre-tuning values are snapshotted to `/var/lib/chutes/tdx-host-tuning-restore.sh`; re-running `apply` reapplies settings without overwriting the saved original state.
+- Automatic GPU profile detection from host PCI/sysfs topology, with multi-GPU host support — new `detect_host_cpus()`, `detect_host_sockets()`, and `detect_numa_node_count()` helpers read CPU count, socket count, and NUMA layout from sysfs to select and verify the correct `GpuProfile`.
+- `discover-profile.sh`: hardware discovery script that probes GPU topology, PCI BAR sizes, NUMA layout, CPU/memory configuration, and firmware paths — outputs a terminal report and JSON file with all values needed to verify or author a `GpuProfile` entry.
+- `benchmark-hf-downloads.py`: new TDX-focused benchmark comparing XET concurrency configurations.
+
+### Changed
+- All GPU profiles now use `OVMF.inteltdx.fd` firmware (edk2-stable202605 Config-B, no Secure Boot). Addresses CVE-2025-2296 (legacy Linux loader disabled by default). Old `TDVF.fd` removed.
+- `gpu-admin-tools` bumped to v2026.06.05 with hardened B300 PCI recovery.
+- B300 disables InfiniBand passthrough: all ConnectX-7 IB-class PFs are NVSwitch bridge devices managed by host-side Fabric Manager; guest networking uses virtio-net.
+- NVSwitch-based B200/B300 profiles now declare `requires_fabric_manager`; host setup starts (or restarts) `nvidia-fabricmanager.service` immediately rather than only enabling it, so the NVSwitch fabric is active before launch.
+- InfiniBand passthrough is now optional: a host whose profile supports IB passthrough but exposes no IB devices logs a note and skips passthrough instead of aborting the launch.
+- `benchmark-network.py`: removed `hf_transfer` scenario (deprecated in huggingface_hub 1.x).
+- GPU profile auto-detection now refuses to guess. `_match_gpu_model` raises a `ValueError` when a host's GPU topology cannot be resolved to exactly one supported profile — no profile matches the device ID + CPU count, or the CPU count is unavailable to disambiguate a shared device ID (e.g. B200 vs B200_XEON6) — instead of falling back to the first match. An unsupported/undetermined topology has no measurement baseline (MRTD/RTMR), so launching it with a guessed profile would produce a VM that cannot attest; the caller must surface the error. Added `_is_known_gpu` for recognition-only detection (used by `detect_nvidia_gpus`), which never raises on a shared device ID.
+- NUMA profiles (H200/B200/B300) now back guest RAM with one `memory-backend-ram` per host NUMA node, each bound via `host-nodes=…,policy=bind` for NUMA locality. These backends deliberately do **not** set `prealloc=on`: under TDX the guest's RAM is private memory served lazily from `guest_memfd`, so preallocating would pin a second full copy of pages the guest never uses as shared (~2× guest RAM) and OOM-kill QEMU as a pod warms up.
+
+### Fixed
+- VM launch now aborts with a clear error instead of OOM-killing the host when a profile's fixed guest RAM cannot physically fit (host RAM minus reserve). Guest RAM stays a fixed, profile-determined value (it feeds the guest ACPI tables and thus TDX measurements), so this check never resizes the VM.
+- Fabric Manager `PARTITION_RAIL_POLICY` is now set to the string `symmetric` required by FM 595+ instead of the numeric `1` that newer FM rejects (CC mode would otherwise stay silently disabled on Blackwell).
+- Pinned the Fabric Manager package to `595.71.05-0ubuntu0.26.04.1` (full distro-qualified version) to match the guest driver pin and stop apt from installing a mismatched build.
+
 ## [2026.05.2] - 2026-05-29
 
 ### Added

@@ -56,8 +56,17 @@ class GpuProfile(ABC):
     @property
     @abstractmethod
     def bar_size_mb(self) -> int:
-        """MMIO BAR size in MB for QEMU fw_cfg hint."""
+        """MMIO BAR size in MB for QEMU fw_cfg hint (when use_ovmf_mmio_fw_cfg is True)."""
         ...
+
+    @property
+    def use_ovmf_mmio_fw_cfg(self) -> bool:
+        """Whether to pass opt/ovmf/X-PciMmio64Mb* fw_cfg hints per GPU to QEMU.
+
+        B300 disables this: 8×512 GiB BARs need a multi-TB aggregate MMIO window that
+        OVMF auto-sizes; per-GPU fw_cfg hints can prevent correct BAR assignment.
+        """
+        return True
 
     @property
     @abstractmethod
@@ -101,6 +110,14 @@ class GpuProfile(ABC):
         """
         ...
 
+    def get_sbr_reset_args(self) -> list[str]:
+        """Return nvidia-gpu-tools args for a Secondary Bus Reset recovery.
+
+        CC-mode GPUs (B200, B300, RTX) use --reset-after-cc-mode-switch.
+        H200 8-GPU PPCIe configs use --reset-after-ppcie-mode-switch.
+        """
+        return ["--reset-with-sbr", "--reset-after-cc-mode-switch"]
+
     @abstractmethod
     def should_passthrough_nvswitches(self, total_gpus: int) -> bool:
         """Whether NVSwitch devices should be detected and passed through."""
@@ -111,12 +128,56 @@ class GpuProfile(ABC):
         """Whether InfiniBand devices should be detected and passed through."""
         return False
 
+    @property
+    def ram_per_gpu_gb(self) -> int:
+        """VM RAM allocated per GPU in GB. Defaults to vram_gb; override when
+        host RAM allows more headroom than VRAM (e.g. B200 with 3 TB host RAM).
+        """
+        return self.vram_gb
+
+    @property
+    def enable_numa_topology(self) -> bool:
+        """Use guest NUMA nodes, per-node memory bind, and PXB-PCIe grouping."""
+        return False
+
+    @property
+    def enable_post_launch_tuning(self) -> bool:
+        """Tune host CPU power and pin QEMU vCPU threads after launch."""
+        return False
+
+    @property
+    def requires_fabric_manager(self) -> bool:
+        """Whether the host Fabric Manager must be running before launch.
+
+        True for NVSwitch-based HGX systems (B200, B300) where FM manages the
+        NVSwitch fabric. FM must be active before CC mode SBR to ensure GPUs
+        properly re-initialize NVLink connections after each reset.
+        """
+        return False
+
+    @property
+    def firmware_filename(self) -> str:
+        """TDVF firmware filename in the repo firmware/ directory.
+
+        Changing the firmware changes MRTD — attestation policy must be
+        re-baselined for any profile using a different image.
+        """
+        # Built from edk2 Config-B (IntelTdxX64.dsc), no Secure Boot.
+        # Run firmware/build-firmware.sh to rebuild from source.
+        return "OVMF.inteltdx.fd"
+
     def describe_mode(self, total_gpus: int) -> str:
         """Human-readable description of the mode for logging."""
         return f"{self.name} passthrough"
 
 
 class B200Profile(GpuProfile):
+    """B200 on a standard Intel Xeon host (2×48c×2t = 192 CPUs, ~2 TB RAM).
+
+    Confirmed from discover-profile.sh on am-b200-57.
+    2 NUMA nodes with GPUs split 4+4 across sockets.
+    """
+
     pci_device_ids = ["2901"]
 
     @property
@@ -133,8 +194,16 @@ class B200Profile(GpuProfile):
         return 192  # B200 HBM3e
 
     @property
+    def ram_per_gpu_gb(self) -> int:
+        # Host has ~2 TB RAM (2015 GB observed); leave ~64 GB for host OS.
+        # 8 GPUs → (2015 - 64) / 8 ≈ 244 GB per GPU.
+        # Confirmed from discover-profile.sh on am-b200-57.
+        return 243
+
+    @property
     def host_cpus(self) -> int:
-        # 2 sockets x 48 cores x 2 threads = 192 (confirmed from lscpu on am-b200-34).
+        # 2 sockets × 48 cores × 2 threads = 192.
+        # Confirmed from discover-profile.sh on am-b200-57.
         return 192
 
     @property
@@ -151,8 +220,106 @@ class B200Profile(GpuProfile):
     def should_passthrough_infiniband(self) -> bool:
         return True
 
+    @property
+    def enable_numa_topology(self) -> bool:
+        # Host has 2 NUMA nodes with GPUs split 4+4 across sockets.
+        return True
+
+    @property
+    def enable_post_launch_tuning(self) -> bool:
+        return True
+
+    @property
+    def requires_fabric_manager(self) -> bool:
+        return True
+
     def describe_mode(self, total_gpus: int) -> str:
         return "CC mode (B200)"
+
+
+class B200Xeon6Profile(B200Profile):
+    """B200 on an Intel Xeon 6 host (2×72c×2t = 288 CPUs, ~3 TB RAM, SNC3).
+
+    Same GPU and passthrough behavior as B200Profile but different host CPU
+    topology. Uses Sub-NUMA Clustering (SNC3): 3 nodes per socket → 6 nodes
+    total. use_numa_topology() requires exactly 2 nodes, so enable_numa_topology
+    has no effect on current SNC3 hardware and falls back to numactl --interleave.
+    Flag kept True so it activates automatically when SNC3 support is added.
+
+    Confirmed from discover-profile.sh on chutes-miner-gpu-0.
+    """
+
+    pci_device_ids = ["2901"]
+
+    @property
+    def name(self) -> str:
+        return "B200_XEON6"
+
+    @property
+    def ram_per_gpu_gb(self) -> int:
+        # Host has ~3 TB RAM (3022 GB observed); leave ~64 GB for host OS.
+        # 8 GPUs → (3022 - 64) / 8 ≈ 369 GB per GPU.
+        return 369
+
+    @property
+    def host_cpus(self) -> int:
+        # 2 sockets × 72 cores × 2 threads = 288.
+        # Confirmed from discover-profile.sh on chutes-miner-gpu-0.
+        return 288
+
+    def describe_mode(self, total_gpus: int) -> str:
+        return "CC mode (B200 Xeon6)"
+
+
+class B300Profile(GpuProfile):
+    pci_device_ids = ["3182"]  # GB110 [B300 SXM6 AC]
+
+    @property
+    def name(self) -> str:
+        return "B300"
+
+    @property
+    def bar_size_mb(self) -> int:
+        # 512 GiB: confirmed from lspci Region 2 on am-b300-61.
+        return 524288
+
+    @property
+    def vram_gb(self) -> int:
+        return 288  # B300 HBM3e (SXM6 AC)
+
+    @property
+    def host_cpus(self) -> int:
+        # 2 sockets x 48 cores x 2 threads = 192 (confirmed from lscpu on am-b300-61).
+        return 192
+
+    @property
+    def host_sockets(self) -> int:
+        return 2
+
+    def get_cc_mode_args(self, total_gpus: int) -> list[list[str]]:
+        return [["--set-cc-mode=on", "--reset-after-cc-mode-switch"]]
+
+    def should_passthrough_nvswitches(self, total_gpus: int) -> bool:
+        return False
+
+    @property
+    def should_passthrough_infiniband(self) -> bool:
+        # B300 HGX: every ConnectX-7 IB-class PF (15b3:1021, PCI class 0207) is an
+        # NVSwitch bridge (SMDL=SW_MNG) and must stay on the host for Fabric Manager.
+        # Remaining CX7 data NICs are Ethernet-class (0200), not IB passthrough targets.
+        # Guest networking uses virtio-net; GPU fabric is NVLink via host-side FM.
+        return False
+
+    @property
+    def use_ovmf_mmio_fw_cfg(self) -> bool:
+        return False
+
+    def describe_mode(self, total_gpus: int) -> str:
+        return "CC mode (B300)"
+
+    @property
+    def requires_fabric_manager(self) -> bool:
+        return True
 
 
 class H200Profile(GpuProfile):
@@ -172,11 +339,23 @@ class H200Profile(GpuProfile):
 
     @property
     def host_cpus(self) -> int:
+        # 2 sockets × 32 cores × 2 threads = 128.
+        # Confirmed from discover-profile.sh on dev-h200-tee.
         return 128
 
     @property
     def host_sockets(self) -> int:
         return 2
+
+    @property
+    def enable_numa_topology(self) -> bool:
+        # Host has 2 NUMA nodes with GPUs split 4+4 across sockets.
+        # Confirmed from discover-profile.sh on dev-h200-tee.
+        return True
+
+    @property
+    def enable_post_launch_tuning(self) -> bool:
+        return True
 
     def get_cc_mode_args(self, total_gpus: int) -> list[list[str]]:
         if total_gpus == 8:
@@ -189,7 +368,15 @@ class H200Profile(GpuProfile):
             ["--set-cc-mode=on", "--reset-after-cc-mode-switch"],
         ]
 
+    def get_sbr_reset_args(self) -> list[str]:
+        return ["--reset-with-sbr", "--reset-after-ppcie-mode-switch"]
+
     def should_passthrough_nvswitches(self, total_gpus: int) -> bool:
+        # HGX H200 SXM5: NVSwitches present and passed through for 8-GPU configs.
+        # NOTE: discover-profile.sh on dev-h200-tee detected 0 NVSwitches — the
+        # detection regex may miss HGX NVSwitch device IDs, or this host is a PCIe
+        # H200 variant. Verify with `lspci | grep -i switch` on a confirmed HGX host
+        # before changing this value.
         return total_gpus == 8
 
     def describe_mode(self, total_gpus: int) -> str:
@@ -217,11 +404,23 @@ class RTXPro6000Profile(GpuProfile):
 
     @property
     def host_cpus(self) -> int:
+        # 2 sockets × 64 cores × 1 thread = 128 (AMD EPYC Genoa, no SMT).
+        # Confirmed from discover-profile.sh on eu1-hpe1-rtx6000pro-se-001.
         return 128
 
     @property
     def host_sockets(self) -> int:
         return 2
+
+    @property
+    def enable_numa_topology(self) -> bool:
+        # Host has 2 NUMA nodes with GPUs split 4+4 across sockets.
+        # Confirmed from discover-profile.sh on eu1-hpe1-rtx6000pro-se-001.
+        return True
+
+    @property
+    def enable_post_launch_tuning(self) -> bool:
+        return True
 
     def get_cc_mode_args(self, total_gpus: int) -> list[list[str]]:
         return [["--set-cc-mode=on", "--reset-after-cc-mode-switch"]]
@@ -235,6 +434,8 @@ class RTXPro6000Profile(GpuProfile):
 
 GPU_PROFILES: dict[str, GpuProfile] = {
     "B200": B200Profile(),
+    "B200_XEON6": B200Xeon6Profile(),
+    "B300": B300Profile(),
     "H200": H200Profile(),
     "RTX_PRO_6000": RTXPro6000Profile(),
 }
